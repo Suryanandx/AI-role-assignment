@@ -1,9 +1,11 @@
 import json
 import re
+import statistics
 import uuid
 
 from pydantic import ValidationError
 
+from app.config import Settings
 from app.db import create_job, get_job, update_job
 from app.models import (
     Article,
@@ -264,6 +266,14 @@ def run_metadata_step(
     return get_job(db_path, job_id)
 
 
+def _sentences_and_word_counts(text: str) -> list[int]:
+    """Split text into sentences and return word count per sentence."""
+    if not (text or text.strip()):
+        return []
+    parts = re.split(r"[.!?]+\s*", text)
+    return [len(s.split()) for s in parts if s.strip()]
+
+
 def _compute_quality_score(job: Job) -> float:
     """Rule-based SEO checks; returns a score in [0.0, 1.0]."""
     scores: list[float] = []
@@ -338,6 +348,46 @@ def _compute_quality_score(job: Job) -> float:
     else:
         scores.append(0.0)
 
+    all_content = " ".join(s.content or "" for s in article.sections)
+    word_counts = _sentences_and_word_counts(all_content)
+    if len(word_counts) >= 2:
+        try:
+            stdev = statistics.stdev(word_counts)
+            if stdev >= 2.0:
+                scores.append(1.0)
+            elif stdev >= 0.5:
+                scores.append(0.5)
+            else:
+                scores.append(0.0)
+        except statistics.StatisticsError:
+            scores.append(0.5)
+    else:
+        scores.append(0.5)
+
+    max_sentences_per_section = 10
+    any_too_dense = False
+    for s in article.sections:
+        n = len(_sentences_and_word_counts(s.content or ""))
+        if n > max_sentences_per_section:
+            any_too_dense = True
+            break
+    scores.append(0.0 if any_too_dense else 1.0)
+
+    has_two_sections = len(article.sections) >= 2
+    first_has_content = bool((first.content or "").strip())
+    has_h2 = any(s.level == 2 for s in article.sections)
+    if has_two_sections and first_has_content and has_h2:
+        scores.append(1.0)
+    elif has_two_sections and first_has_content:
+        scores.append(0.5)
+    else:
+        scores.append(0.0)
+
+    levels = [s.level for s in article.sections]
+    non_decreasing = all(levels[i] <= levels[i + 1] for i in range(len(levels) - 1))
+    first_is_one = levels[0] == 1 if levels else False
+    scores.append(1.0 if (non_decreasing and first_is_one) else 0.0)
+
     return sum(scores) / len(scores) if scores else 0.0
 
 
@@ -350,6 +400,83 @@ def run_validation_step(job_id: uuid.UUID, db_path: str) -> Job | None:
         return get_job(db_path, job_id)
     score = _compute_quality_score(job)
     update_job(db_path, job_id, {"quality_score": score, "error": None})
+    return get_job(db_path, job_id)
+
+
+def _revision_reason(job: Job, score: float) -> str:
+    """Return a short targeted reason for revision when score is below threshold."""
+    if not job.article or not job.article.sections:
+        return "improve SEO and clarity of the intro"
+    primary = job.topic
+    if job.metadata:
+        primary = job.metadata.primary_keyword
+    elif job.serp_analysis and job.serp_analysis.keyword_candidates:
+        primary = job.serp_analysis.keyword_candidates[0]
+    primary_lower = primary.lower()
+    first = job.article.sections[0]
+    intro = (first.content or "")[:500]
+    if primary_lower not in intro.lower():
+        return "improve intro for keyword density"
+    if primary_lower not in (first.heading or "").lower():
+        return "include primary keyword in the main heading"
+    levels = [s.level for s in job.article.sections]
+    if levels and levels[0] != 1:
+        return "ensure the first heading is H1"
+    non_decreasing = all(levels[i] <= levels[i + 1] for i in range(len(levels) - 1))
+    if not non_decreasing:
+        return "fix heading order so levels do not skip"
+    return "improve SEO and clarity of the intro"
+
+
+def _build_revision_messages(job: Job, reason: str) -> list[dict[str, str]]:
+    primary = job.topic
+    if job.metadata:
+        primary = job.metadata.primary_keyword
+    elif job.serp_analysis and job.serp_analysis.keyword_candidates:
+        primary = job.serp_analysis.keyword_candidates[0]
+    first_content = ""
+    if job.article and job.article.sections:
+        first_content = (job.article.sections[0].content or "")[:800]
+    system = (
+        "You are an SEO content specialist. Output only valid JSON with no markdown. "
+        "Single object with one key: sections (array of objects with level, heading, content). "
+        "Revise the article to address the instruction; keep the same number of sections and structure."
+    )
+    user = (
+        f"Primary keyword: {primary}. Instruction: {reason}. "
+        f"Current first section content: {first_content} "
+        "Output the full revised article as JSON: {\"sections\": [{\"level\": 1, \"heading\": \"...\", \"content\": \"...\"}, ...]}."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def run_revision_step(
+    job_id: uuid.UUID,
+    db_path: str,
+    llm_client: LLMClient,
+    reason: str,
+) -> Job | None:
+    job = get_job(db_path, job_id)
+    if job is None:
+        return None
+    if job.article is None or not job.article.sections:
+        update_job(db_path, job_id, {"error": "Revision step failed: no article"})
+        return get_job(db_path, job_id)
+    messages = _build_revision_messages(job, reason)
+    try:
+        response = llm_client.generate(messages, options=GenerateOptions(json_mode=True))
+        data = json.loads(response)
+        article = Article.model_validate(data)
+    except json.JSONDecodeError as e:
+        update_job(db_path, job_id, {"error": f"Revision step failed: invalid JSON ({e!s})"})
+        return get_job(db_path, job_id)
+    except ValidationError as e:
+        update_job(db_path, job_id, {"error": f"Revision step failed: validation error ({e!s})"})
+        return get_job(db_path, job_id)
+    if not article.sections:
+        update_job(db_path, job_id, {"error": "Revision step failed: no sections in response"})
+        return get_job(db_path, job_id)
+    update_job(db_path, job_id, {"article": article.model_dump(), "error": None})
     return get_job(db_path, job_id)
 
 
@@ -476,6 +603,26 @@ def run_pipeline(
     if job.error is not None:
         update_job(db_path, job_id, {"status": JobStatus.failed})
         return get_job(db_path, job_id)
+
+    settings = Settings()
+    if job.quality_score is not None and job.quality_score < settings.quality_score_threshold:
+        reason = _revision_reason(job, job.quality_score)
+        result = run_revision_step(job_id, db_path, llm_client, reason)
+        if result is None:
+            update_job(db_path, job_id, {"status": JobStatus.failed})
+            return get_job(db_path, job_id)
+        job = result
+        if job.error is not None:
+            update_job(db_path, job_id, {"status": JobStatus.failed})
+            return get_job(db_path, job_id)
+        result = run_validation_step(job_id, db_path)
+        if result is None:
+            update_job(db_path, job_id, {"status": JobStatus.failed})
+            return get_job(db_path, job_id)
+        job = result
+        if job.error is not None:
+            update_job(db_path, job_id, {"status": JobStatus.failed})
+            return get_job(db_path, job_id)
 
     update_job(db_path, job_id, {"status": JobStatus.completed})
     return get_job(db_path, job_id)

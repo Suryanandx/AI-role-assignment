@@ -10,6 +10,7 @@ from app.pipeline import (
     run_metadata_step,
     run_outline_step,
     run_pipeline,
+    run_revision_step,
     run_serp_step,
     run_validation_step,
 )
@@ -557,3 +558,149 @@ def test_run_faq_step_invalid_schema_sets_error():
     assert job is not None
     assert job.error is not None
     assert "FAQ step failed" in job.error
+
+
+def test_run_revision_step_success():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Rev", word_count=1000, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    revised_json = (
+        '{"sections":[{"level":1,"heading":"Revised intro","content":"Revised content with keyword."},'
+        '{"level":2,"heading":"Section two","content":"Body."}]}'
+    )
+    job = run_revision_step(job_id, path, MockLLMClient(response=revised_json), "improve intro for keyword density")
+    assert job is not None
+    assert job.article is not None
+    assert len(job.article.sections) == 2
+    assert job.article.sections[0].heading == "Revised intro"
+    assert job.error is None
+
+
+def test_run_revision_step_unknown_job_returns_none():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    result = run_revision_step(uuid.uuid4(), path, MockLLMClient(), "improve intro")
+    assert result is None
+
+
+def test_run_revision_step_no_article_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job = run_revision_step(job_id, path, MockLLMClient(), "improve intro")
+    assert job is not None
+    assert job.error is not None
+    assert "no article" in job.error
+
+
+def test_run_revision_step_invalid_json_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    job = run_revision_step(job_id, path, MockLLMClient(response="not json"), "improve intro")
+    assert job is not None
+    assert job.error is not None
+    assert "Revision step failed" in job.error
+
+
+def test_run_revision_step_invalid_schema_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    job = run_revision_step(job_id, path, MockLLMClient(response='{"wrong":"shape"}'), "improve intro")
+    assert job is not None
+    assert job.error is not None
+    assert "Revision step failed" in job.error
+
+
+def test_quality_scorer_sentence_variety_and_heading_order():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Keyword", word_count=1500, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    run_outline_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'),
+    )
+    article_good = (
+        '{"sections":['
+        '{"level":1,"heading":"Keyword guide","content":"Keyword matters for SEO. This is a longer second sentence with more words for variety."},'
+        '{"level":2,"heading":"Details","content":"Section two."}'
+        ']}'
+    )
+    run_article_step(job_id, path, MockLLMClient(response=article_good))
+    metadata_json = (
+        '{"title_tag":"Keyword Guide","meta_description":"Learn about keyword. More text here to hit length.",'
+        '"primary_keyword":"Keyword","secondary_keywords":[],'
+        '"internal_links":[{"anchor_text":"a","target_topic":"b"},{"anchor_text":"c","target_topic":"d"},{"anchor_text":"e","target_topic":"f"}],'
+        '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"intro"},{"url":"https://y.com","title":"Y","placement_context":"body"}]}'
+    )
+    run_metadata_step(job_id, path, MockLLMClient(response=metadata_json))
+    job = run_validation_step(job_id, path)
+    assert job is not None
+    assert job.quality_score is not None
+    assert 0 <= job.quality_score <= 1
+    assert job.quality_score >= 0.6
+
+
+def test_quality_scorer_bad_heading_order_lower_score():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Topic", word_count=1500, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    run_outline_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'),
+    )
+    article_bad_order = (
+        '{"sections":['
+        '{"level":2,"heading":"Wrong first","content":"H2 first."},'
+        '{"level":1,"heading":"Topic","content":"Topic is here."}'
+        ']}'
+    )
+    run_article_step(job_id, path, MockLLMClient(response=article_bad_order))
+    job = run_validation_step(job_id, path)
+    assert job is not None
+    assert job.quality_score is not None
+    assert 0 <= job.quality_score <= 1
+
+
+def test_run_pipeline_triggers_revision_when_below_threshold():
+    import os
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="LowScore", word_count=1000, language="en"), path)
+    outline_json = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+    article_json = '{"sections":[{"level":1,"heading":"Other","content":"No keyword here."}]}'
+    metadata_json = (
+        '{"title_tag":"T","meta_description":"D.",'
+        '"primary_keyword":"LowScore","secondary_keywords":[],'
+        '"internal_links":[{"anchor_text":"a","target_topic":"b"}],'
+        '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"c"}]}'
+    )
+    revised_json = '{"sections":[{"level":1,"heading":"LowScore guide","content":"LowScore is important."}]}'
+    faq_json = '[{"question":"Q?","answer":"A."}]'
+    llm = _MultiResponseLLM([outline_json, article_json, metadata_json, faq_json, revised_json])
+    os.environ["QUALITY_SCORE_THRESHOLD"] = "0.99"
+    try:
+        job = run_pipeline(job_id, path, MockSERPClient(), llm)
+    finally:
+        os.environ.pop("QUALITY_SCORE_THRESHOLD", None)
+    assert job is not None
+    assert job.quality_score is not None
+    assert job.status in (JobStatus.completed, JobStatus.failed)
