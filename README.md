@@ -1,8 +1,16 @@
-# AI-role-assignment
+# SEO Article Generator
 
-## Run backend
+Backend service that generates SEO-optimized articles from a topic: SERP research, outline, article writing, metadata, and validation. Built for the AISEO Backend Engineer take-home.
 
-Requires Python 3.11+. From the repo root:
+**Design document:** [SEO Article Generator Design Document](https://docs.google.com/document/d/1Jw-C8bzjgTT0HzGL2XNyLeXwPjk6QcCZDGmgmRaR4v0/edit?usp=sharing)
+
+**Author:** [Suryanand](https://github.com/suryanandx) | GitHub: [suryanandx](https://github.com/suryanandx) | Email: [work@suryanand.com](mailto:work@suryanand.com)
+
+---
+
+## How to run
+
+**Requirements:** Python 3.11+
 
 ```bash
 cd backend
@@ -12,100 +20,97 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Optional: create `backend/.env` with `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `SERP_USE_MOCK`, `DB_PATH`. Defaults: Ollama at `http://localhost:11434`, model `llama3`, mock SERP on, DB at `./data/jobs.db`.
+Server runs at `http://localhost:8000`. Health: `GET /health` returns `{"status": "ok"}`.
 
-Health check: `GET http://localhost:8000/health` returns `{"status": "ok"}`.
+**Optional env:** Create `backend/.env` with:
+
+| Variable        | Default                     | Description              |
+|----------------|-----------------------------|--------------------------|
+| OLLAMA_BASE_URL | http://localhost:11434     | Ollama API base URL      |
+| OLLAMA_MODEL   | llama3                      | Model name               |
+| SERP_USE_MOCK  | true                        | Use mock SERP (no API)    |
+| DB_PATH        | ./data/jobs.db              | SQLite database path     |
 
 ---
 
-## Backend Engineer Position - Take-Home Assessment
+## Project structure
+
+```
+backend/
+  app/
+    api/          # GraphQL and HTTP routes (later)
+    models/       # Pydantic models (later)
+    pipeline/     # SERP → outline → article → validation (later)
+    services/     # LLM, SERP clients (later)
+    config.py     # Settings from env
+    main.py       # FastAPI app, health route
+  tests/
+  requirements.txt
+```
+
+---
+
+## Tech stack
+
+- **API:** FastAPI
+- **Config:** pydantic-settings
+- **GraphQL:** Strawberry (planned)
+- **LLM:** Ollama (OpenAI-compatible)
+- **DB:** SQLite
+- **Tests:** pytest, pytest-asyncio
+
+---
+
+## Tests
+
+From `backend/`:
+
+```bash
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+---
+
+## Original assignment brief
+
+*Context for the take-home assessment.*
 
 ### Context
 
 We're building a content generation platform that helps businesses create SEO-optimized articles at scale. One of our core features is an intelligent agent that can analyze search engine results and produce high-quality, keyword-optimized content that ranks well while still reading naturally.
 
-### The Problem
+### The problem
 
-Design and implement a backend service that generates SEO-optimized articles for a given topic. The system should be intelligent about how it approaches content creation - not just generating text, but actually understanding what's ranking on search engines and why.
+Design and implement a backend service that generates SEO-optimized articles for a given topic. The system should be intelligent about how it approaches content creation: not just generating text, but understanding what's ranking on search engines and why.
 
-### What We're Looking For
+### What we're looking for
 
-Build an agent-based system that takes a topic (like "best productivity tools for remote teams") and produces a complete, publish-ready article. The agent should:
+Build an agent-based system that takes a topic (e.g. "best productivity tools for remote teams") and produces a complete, publish-ready article. The agent should:
 
 1. Research the competitive landscape by analyzing the top 10 search results for relevant keywords
 2. Identify what topics and subtopics are being covered by successful content
 3. Generate a structured outline that addresses the same search intent
 4. Produce a full article that follows SEO best practices without feeling robotic
 
-### Technical Requirements
+### Technical requirements
 
-**Input Structure:**
-- Topic or primary keyword
-- Target word count (default 1500)
-- Language preference
+**Input:** Topic or primary keyword, target word count (default 1500), language preference.
 
-**Expected Output:**
-- Article with proper heading hierarchy (H1, H2, H3)
-- SEO metadata (title tag, meta description)
-- Keyword analysis showing primary and secondary keywords used
-- Structured data that can be validated programmatically
-- Internal linking suggestions (3-5 relevant anchor texts with suggested target pages)
-- External references (2-4 authoritative sources to cite, with context for placement)
+**Output:** Article with H1/H2/H3 hierarchy, SEO metadata (title tag, meta description), keyword analysis, structured data, 3–5 internal link suggestions, 2–4 external references with placement context.
 
-**Architecture Considerations:**
-- Use structured data models throughout (Pydantic or similar)
-- Handle external API failures gracefully
-- Persist generation jobs so they can be tracked and resumed
-- Validate that output actually meets SEO criteria
+**Architecture:** Structured data models (Pydantic or similar), graceful handling of external API failures, persist jobs for tracking and resume, validate output against SEO criteria.
 
-**SERP Analysis:**
-You'll need to work with search result data. You can use services like SerpAPI, DataForSEO, or ValueSERP to fetch real search results, or mock the data if you prefer. The data structure should include at minimum: rank, URL, title, and snippet for each of the top 10 results. The agent should extract common themes and topics from these results to inform the outline.
+**SERP:** Use SerpAPI, DataForSEO, ValueSERP, or mock data. Minimum per result: rank, URL, title, snippet. Agent must extract themes and topics to inform the outline.
 
-If mocking the data, structure it realistically - for example:
-```json
-{
-  "rank": 1,
-  "url": "https://example.com/productivity-tools",
-  "title": "15 Best Productivity Tools for Remote Teams in 2025",
-  "snippet": "Discover the top productivity tools that help remote teams collaborate..."
-}
-```
+**Quality bar:** Primary keyword in title and intro, proper header structure, coverage of related subtopics, human-sounding copy.
 
-**Quality Bar:**
-The generated articles should demonstrate actual SEO principles: primary keyword in title and introduction, proper header structure, coverage of related subtopics, and most importantly - they should read like a human wrote them, not a content mill bot.
+**Linking:** 3–5 internal links (anchor text + target page/topic); 2–4 external refs (authoritative sources + placement).
 
-**Linking Strategy:**
-- Internal links: Identify 3-5 opportunities to link to related content (e.g., "SEO keyword research tools", "content optimization checklist"). Include the anchor text and suggested target page/topic.
-- External links: Select 2-4 authoritative sources to reference (think industry reports, academic studies, or established publications). Specify where in the article each citation would add credibility.
+### Bonus
 
-### Bonus Points
+Job status tracking (pending, running, completed, failed); durability and resume after crash; content quality scorer with revisions; FAQ from SERP; tests that validate SEO constraints.
 
-- Job management system with status tracking (pending, running, completed, failed)
-- Durability - if the process crashes after collecting SERP data, it should be able to resume
-- Content quality scorer that evaluates the draft and triggers revisions
-- FAQ section generated from common questions in search results
-- Test coverage that validates SEO constraints
+### Deliverables
 
-### What to Submit
-
-A GitHub repository with:
-- Complete working code
-- README explaining how to run it
-- At least one example showing input -> output
-- Brief explanation of your design decisions
-- Tests demonstrating the system works
-
-### Time Expectation
-
-This is a substantial assignment. We expect it will take 4-6 hours for a senior engineer. Don't feel pressured to implement every bonus feature - we'd rather see a well-architected core system than a rushed implementation with everything half-done.
-
-### Evaluation
-
-We'll be looking at:
-- Code organization and architecture decisions
-- How well the agent logic synthesizes SERP data into article structure
-- Quality of the generated content (does it actually follow SEO principles?)
-- Error handling and validation
-- Documentation clarity
-
-If you have questions or need clarification, feel free to reach out. We're evaluating your problem-solving approach as much as your coding ability.
+Working code, README with run instructions, at least one input-to-output example, short design notes, tests.
