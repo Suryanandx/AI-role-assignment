@@ -1,4 +1,4 @@
-"""Tests for GraphQL API: createJob, job(id), runPipeline."""
+"""Tests for GraphQL API: createJob, job(id), jobs(limit, offset), runPipeline."""
 
 import os
 import tempfile
@@ -107,6 +107,73 @@ def test_graphql_job_nonexistent_returns_null():
             )
         assert response.status_code == 200
         assert response.json()["data"]["job"] is None
+    finally:
+        os.environ.pop("DB_PATH", None)
+
+
+def test_graphql_jobs_list_returns_recent_first():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    os.environ["DB_PATH"] = path
+    try:
+        init_db(path)
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=MockLLMClient()),
+        ):
+            client = TestClient(app)
+            for topic in ["First job", "Second job", "Third job"]:
+                client.post(
+                    "/graphql",
+                    json={
+                        "query": "mutation($input: CreateJobInput!) { createJob(input: $input) }",
+                        "variables": {"input": {"topic": topic, "wordCount": 500, "language": "en"}},
+                    },
+                )
+            resp = client.post(
+                "/graphql",
+                json={
+                    "query": "query { jobs(limit: 2) { id topic } }",
+                },
+            )
+        assert resp.status_code == 200
+        data = resp.json()["data"]["jobs"]
+        assert len(data) == 2
+        assert data[0]["topic"] == "Third job"
+        assert data[1]["topic"] == "Second job"
+    finally:
+        os.environ.pop("DB_PATH", None)
+
+
+def test_graphql_jobs_list_respects_limit_and_offset():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    os.environ["DB_PATH"] = path
+    try:
+        init_db(path)
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=MockLLMClient()),
+        ):
+            client = TestClient(app)
+            for topic in ["A", "B", "C"]:
+                client.post(
+                    "/graphql",
+                    json={
+                        "query": "mutation($input: CreateJobInput!) { createJob(input: $input) }",
+                        "variables": {"input": {"topic": topic}},
+                    },
+                )
+            resp = client.post(
+                "/graphql",
+                json={
+                    "query": "query { jobs(limit: 1, offset: 1) { id topic } }",
+                },
+            )
+        assert resp.status_code == 200
+        data = resp.json()["data"]["jobs"]
+        assert len(data) == 1
+        assert data[0]["topic"] == "B"
     finally:
         os.environ.pop("DB_PATH", None)
 

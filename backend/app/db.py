@@ -127,6 +127,24 @@ def get_job(db_path: str, job_id: uuid.UUID | str) -> Job | None:
     return _row_to_job(row)
 
 
+LIST_JOBS_MAX_LIMIT = 100
+
+
+def list_jobs(db_path: str, limit: int = 20, offset: int = 0) -> list[Job]:
+    init_db(db_path)
+    limit = min(max(1, limit), LIST_JOBS_MAX_LIMIT)
+    offset = max(0, offset)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [_row_to_job(row) for row in rows]
+
+
 _UPDATABLE = {
     "status", "serp_raw", "serp_analysis", "outline", "article", "metadata",
     "internal_links", "external_refs", "quality_score", "faq", "error", "updated_at",
