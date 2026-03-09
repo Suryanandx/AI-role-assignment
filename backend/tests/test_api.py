@@ -158,3 +158,62 @@ def test_graphql_run_pipeline_returns_job():
             assert len(run_data["article"]["sections"]) >= 1
     finally:
         os.environ.pop("DB_PATH", None)
+
+
+def test_graphql_job_article_with_faq_returns_sections_and_faq():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    os.environ["DB_PATH"] = path
+    try:
+        init_db(path)
+        outline = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+        article = '{"sections":[{"level":1,"heading":"FAQ output","content":"Content here."}]}'
+        metadata = (
+            '{"title_tag":"T","meta_description":"D.",'
+            '"primary_keyword":"K","secondary_keywords":[],'
+            '"internal_links":[{"anchor_text":"a","target_topic":"b"}],'
+            '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"c"}]}'
+        )
+        faq = '[{"question":"What is it?","answer":"An answer."}]'
+        llm = _MultiResponseLLM([outline, article, metadata, faq])
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=llm),
+        ):
+            client = TestClient(app)
+            create_resp = client.post(
+                "/graphql",
+                json={
+                    "query": "mutation($input: CreateJobInput!) { createJob(input: $input) }",
+                    "variables": {"input": {"topic": "FAQ output"}},
+                },
+            )
+            assert create_resp.status_code == 200
+            job_id = create_resp.json()["data"]["createJob"]
+            client.post(
+                "/graphql",
+                json={
+                    "query": "mutation($jobId: ID!) { runPipeline(jobId: $jobId) { id } }",
+                    "variables": {"jobId": job_id},
+                },
+            )
+            query_resp = client.post(
+                "/graphql",
+                json={
+                    "query": "query($id: ID!) { job(id: $id) { articleWithFaq { sections { heading } faq { question } } } }",
+                    "variables": {"id": job_id},
+                },
+            )
+        assert query_resp.status_code == 200
+        data = query_resp.json()
+        assert "data" in data and data["data"]["job"] is not None
+        awf = data["data"]["job"].get("articleWithFaq")
+        if awf is None:
+            awf = data["data"]["job"].get("article_with_faq")
+        assert awf is not None
+        assert "sections" in awf and len(awf["sections"]) >= 1
+        assert awf["sections"][0]["heading"] == "FAQ output"
+        assert "faq" in awf and len(awf["faq"]) >= 1
+        assert awf["faq"][0]["question"] == "What is it?"
+    finally:
+        os.environ.pop("DB_PATH", None)

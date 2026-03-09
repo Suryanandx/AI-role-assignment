@@ -3,6 +3,8 @@ import uuid
 
 from app.db import get_job, init_db
 from app.models import CreateJobInput, JobStatus
+from app.models import Job, JobStatus
+from app.models.serp import SERPAnalysis
 from app.pipeline import (
     create_job_step,
     run_article_step,
@@ -14,6 +16,7 @@ from app.pipeline import (
     run_serp_step,
     run_validation_step,
 )
+from app.pipeline.steps import _build_faq_messages
 from app.services import MockLLMClient, MockSERPClient
 
 
@@ -558,6 +561,21 @@ def test_run_faq_step_invalid_schema_sets_error():
     assert job is not None
     assert job.error is not None
     assert "FAQ step failed" in job.error
+
+
+def test_faq_step_paa_questions_included_in_prompt():
+    job = Job(
+        status=JobStatus.pending,
+        topic="PAA topic",
+        word_count=1000,
+        language="en",
+        serp_analysis=SERPAnalysis(paa_questions=["What is X?", "How to Y?"]),
+    )
+    messages = _build_faq_messages(job)
+    assert len(messages) >= 2
+    user_content = next((m["content"] for m in messages if m.get("role") == "user"), "")
+    assert "What is X?" in user_content
+    assert "How to Y?" in user_content
 
 
 def test_run_revision_step_success():
