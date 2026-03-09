@@ -22,6 +22,17 @@ uvicorn app.main:app --reload
 
 Server runs at `http://localhost:8000`. Health: `GET /health` returns `{"status": "ok"}`.
 
+**Frontend (Next.js):**
+
+```bash
+cd frontend
+cp .env.local.example .env.local   # optional; defaults to http://localhost:8000/graphql
+npm install
+npm run dev
+```
+
+App runs at `http://localhost:3000`. Use the job lookup page to query a job by ID (backend must be running).
+
 **Optional env:** Create `backend/.env` with:
 
 | Variable        | Default                     | Description              |
@@ -36,16 +47,19 @@ Server runs at `http://localhost:8000`. Health: `GET /health` returns `{"status"
 ## Project structure
 
 ```
-backend/
+backend/          # FastAPI, GraphQL at /graphql
   app/
-    api/          # GraphQL and HTTP routes (later)
-    models/       # Pydantic models (later)
-    pipeline/     # SERP → outline → article → validation (later)
-    services/     # LLM, SERP clients (later)
+    api/          # GraphQL and HTTP routes
+    models/       # Pydantic models
+    pipeline/     # SERP, outline, article, validation
+    services/     # LLM, SERP clients
     config.py     # Settings from env
     main.py       # FastAPI app, health route
   tests/
   requirements.txt
+frontend/         # Next.js app; GraphQL client, job lookup page
+  app/            # App Router pages
+  lib/            # GraphQL client
 ```
 
 ---
