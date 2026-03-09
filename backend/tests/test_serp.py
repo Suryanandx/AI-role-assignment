@@ -1,5 +1,7 @@
+from unittest.mock import MagicMock, patch
+
 from app.models import SERPResult
-from app.services import MockSERPClient, get_serp_client
+from app.services import MockSERPClient, SerpAPIClient, get_serp_client
 
 
 def test_mock_returns_10_results():
@@ -46,7 +48,82 @@ def test_factory_returns_mock():
     assert all(isinstance(r, SERPResult) for r in results)
 
 
-def test_factory_real_raises():
+def test_factory_real_without_key_raises():
     import pytest
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="SERPAPI_KEY"):
         get_serp_client(use_mock=False)
+
+
+def test_serpapi_client_maps_organic_results():
+    client = SerpAPIClient(api_key="test-key")
+    organic = [
+        {"position": 1, "title": "First", "link": "https://a.com", "snippet": "Snippet one."},
+        {"position": 2, "title": "Second", "link": "https://b.com", "snippet": "Snippet two."},
+    ]
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"organic_results": organic}
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("app.services.serp.httpx.Client") as mock_client_cls:
+        mock_http = MagicMock()
+        mock_http.get.return_value = mock_response
+        mock_client_cls.return_value.__enter__.return_value = mock_http
+        mock_client_cls.return_value.__exit__.return_value = False
+
+        results = client.get_serp("test query")
+
+    assert len(results) == 2
+    assert results[0].rank == 1 and results[0].title == "First" and results[0].url == "https://a.com"
+    assert results[0].snippet == "Snippet one."
+    assert results[1].rank == 2 and results[1].title == "Second"
+    mock_http.get.assert_called_once()
+    call_kw = mock_http.get.call_args
+    assert call_kw[1]["params"]["q"] == "test query"
+    assert call_kw[1]["params"]["api_key"] == "test-key"
+
+
+def test_serpapi_client_empty_results():
+    client = SerpAPIClient(api_key="test-key")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"organic_results": []}
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("app.services.serp.httpx.Client") as mock_client_cls:
+        mock_http = MagicMock()
+        mock_http.get.return_value = mock_response
+        mock_client_cls.return_value.__enter__.return_value = mock_http
+        mock_client_cls.return_value.__exit__.return_value = False
+
+        results = client.get_serp("query")
+
+    assert results == []
+
+
+def test_serpapi_client_sorts_by_rank():
+    client = SerpAPIClient(api_key="test-key")
+    organic = [
+        {"position": 3, "title": "Third", "link": "https://c.com", "snippet": "C"},
+        {"position": 1, "title": "First", "link": "https://a.com", "snippet": "A"},
+    ]
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"organic_results": organic}
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("app.services.serp.httpx.Client") as mock_client_cls:
+        mock_http = MagicMock()
+        mock_http.get.return_value = mock_response
+        mock_client_cls.return_value.__enter__.return_value = mock_http
+        mock_client_cls.return_value.__exit__.return_value = False
+
+        results = client.get_serp("query")
+
+    assert [r.rank for r in results] == [1, 3]
+    assert results[0].title == "First" and results[1].title == "Third"
+
+
+def test_factory_returns_serpapi_client_when_key_set():
+    from types import SimpleNamespace
+    settings = SimpleNamespace(serp_use_mock=False, serp_provider="serpapi", serpapi_key="my-key")
+    client = get_serp_client(use_mock=False, settings=settings)
+    assert isinstance(client, SerpAPIClient)
+    assert client.api_key == "my-key"

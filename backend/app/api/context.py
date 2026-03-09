@@ -8,6 +8,6 @@ def get_context():
     settings = Settings()
     return {
         "db_path": settings.db_path,
-        "serp_client": get_serp_client(settings.serp_use_mock),
+        "serp_client": get_serp_client(settings.serp_use_mock, settings),
         "llm_client": get_llm_client(settings),
     }
