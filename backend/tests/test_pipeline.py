@@ -6,6 +6,7 @@ from app.models import CreateJobInput, JobStatus
 from app.pipeline import (
     create_job_step,
     run_article_step,
+    run_faq_step,
     run_metadata_step,
     run_outline_step,
     run_pipeline,
@@ -420,7 +421,8 @@ def test_run_pipeline_full_run_to_completion():
         '"internal_links":[{"anchor_text":"a","target_topic":"t1"},{"anchor_text":"b","target_topic":"t2"}],'
         '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"intro"}]}'
     )
-    llm = _MultiResponseLLM([outline_json, article_json, metadata_json])
+    faq_json = '[{"question":"What is SEO?","answer":"SEO is search engine optimization."},{"question":"Why use it?","answer":"To rank better."}]'
+    llm = _MultiResponseLLM([outline_json, article_json, metadata_json, faq_json])
     job = run_pipeline(job_id, path, MockSERPClient(), llm)
     assert job is not None
     assert job.status == JobStatus.completed
@@ -428,6 +430,9 @@ def test_run_pipeline_full_run_to_completion():
     assert job.outline is not None
     assert job.article is not None
     assert job.metadata is not None
+    assert job.faq is not None
+    assert len(job.faq) == 2
+    assert job.faq[0].question == "What is SEO?" and job.faq[0].answer
     assert job.quality_score is not None
     assert job.error is None
 
@@ -458,7 +463,8 @@ def test_run_pipeline_resume_skips_completed_steps():
         '"internal_links":[{"anchor_text":"x","target_topic":"y"}],'
         '"external_refs":[{"url":"https://a.com","title":"A","placement_context":"body"}]}'
     )
-    llm = _MultiResponseLLM([outline_json, article_json, metadata_json])
+    faq_json = '[{"question":"Q?","answer":"A."}]'
+    llm = _MultiResponseLLM([outline_json, article_json, metadata_json, faq_json])
     job = run_pipeline(job_id, path, MockSERPClient(), llm)
     assert job is not None
     assert job.status == JobStatus.completed
@@ -467,6 +473,7 @@ def test_run_pipeline_resume_skips_completed_steps():
     assert job.outline is not None
     assert job.article is not None
     assert job.metadata is not None
+    assert job.faq is not None
     assert job.quality_score is not None
 
 
@@ -481,3 +488,72 @@ def test_run_pipeline_failure_sets_status_failed():
     assert job is not None
     assert job.status == JobStatus.failed
     assert job.error is not None
+
+
+def test_run_faq_step_success():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="FAQ topic", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    run_outline_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'),
+    )
+    run_article_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"level":1,"heading":"FAQ topic","content":"Some content."}]}'),
+    )
+    faq_json = '[{"question":"What is it?","answer":"An answer."},{"question":"How?","answer":"Like this."}]'
+    job = run_faq_step(job_id, path, MockLLMClient(response=faq_json))
+    assert job is not None
+    assert job.faq is not None
+    assert len(job.faq) == 2
+    assert job.faq[0].question == "What is it?" and job.faq[0].answer == "An answer."
+    assert job.faq[1].question == "How?" and job.faq[1].answer == "Like this."
+    assert job.error is None
+
+
+def test_run_faq_step_unknown_job_returns_none():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    result = run_faq_step(uuid.uuid4(), path, MockLLMClient())
+    assert result is None
+
+
+def test_run_faq_step_no_serp_or_article_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    job = run_faq_step(job_id, path, MockLLMClient(response="[]"))
+    assert job is not None
+    assert job.error is not None
+    assert "no SERP analysis or article" in job.error
+
+
+def test_run_faq_step_invalid_json_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job = run_faq_step(job_id, path, MockLLMClient(response="not json"))
+    assert job is not None
+    assert job.error is not None
+    assert "FAQ step failed" in job.error
+
+
+def test_run_faq_step_invalid_schema_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job = run_faq_step(job_id, path, MockLLMClient(response='[{"question":"Q?","answer":"A."},{"wrong":"shape"}]'))
+    assert job is not None
+    assert job.error is not None
+    assert "FAQ step failed" in job.error
