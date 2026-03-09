@@ -9,6 +9,7 @@ from app.models import (
     Article,
     CreateJobInput,
     ExternalRef,
+    FAQItem,
     InternalLink,
     Job,
     JobStatus,
@@ -352,6 +353,60 @@ def run_validation_step(job_id: uuid.UUID, db_path: str) -> Job | None:
     return get_job(db_path, job_id)
 
 
+def _build_faq_messages(job: Job) -> list[dict[str, str]]:
+    system = (
+        "You are an SEO content assistant. Output only valid JSON: an array of FAQ objects, "
+        'each with "question" and "answer" (strings). Produce 3 to 5 FAQs relevant to the topic. '
+        "Use the given PAA-style questions when provided; write concise answers (1 to 3 sentences)."
+    )
+    parts = [f"Topic: {job.topic}."]
+    if job.serp_analysis and job.serp_analysis.paa_questions:
+        parts.append(f"PAA questions to use or adapt: {', '.join(job.serp_analysis.paa_questions[:5])}.")
+    else:
+        parts.append("Suggest 3 to 5 common questions for this topic and answer them.")
+    if job.article and job.article.sections:
+        excerpt = job.article.sections[0].content[:400].strip() if job.article.sections[0].content else ""
+        if excerpt:
+            parts.append(f"Article excerpt for context: {excerpt}")
+    parts.append("Output a JSON array of objects with question and answer keys only.")
+    user = " ".join(parts)
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def run_faq_step(
+    job_id: uuid.UUID,
+    db_path: str,
+    llm_client: LLMClient,
+) -> Job | None:
+    job = get_job(db_path, job_id)
+    if job is None:
+        return None
+    has_serp = job.serp_analysis is not None
+    has_article = job.article is not None and job.article.sections
+    if not has_serp and not has_article:
+        update_job(db_path, job_id, {"error": "FAQ step failed: no SERP analysis or article"})
+        return get_job(db_path, job_id)
+    messages = _build_faq_messages(job)
+    try:
+        response = llm_client.generate(messages, options=GenerateOptions(json_mode=True))
+        data = json.loads(response)
+        if isinstance(data, dict) and "items" in data:
+            raw_list = data["items"]
+        elif isinstance(data, list):
+            raw_list = data
+        else:
+            raw_list = []
+        faq_list = [FAQItem.model_validate(x) for x in raw_list][:5]
+    except json.JSONDecodeError as e:
+        update_job(db_path, job_id, {"error": f"FAQ step failed: invalid JSON ({e!s})"})
+        return get_job(db_path, job_id)
+    except (ValidationError, KeyError, TypeError) as e:
+        update_job(db_path, job_id, {"error": f"FAQ step failed: validation error ({e!s})"})
+        return get_job(db_path, job_id)
+    update_job(db_path, job_id, {"faq": [f.model_dump() for f in faq_list], "error": None})
+    return get_job(db_path, job_id)
+
+
 def run_pipeline(
     job_id: uuid.UUID,
     db_path: str,
@@ -395,6 +450,16 @@ def run_pipeline(
 
     if job.metadata is None:
         result = run_metadata_step(job_id, db_path, llm_client)
+        if result is None:
+            update_job(db_path, job_id, {"status": JobStatus.failed})
+            return get_job(db_path, job_id)
+        job = result
+        if job.error is not None:
+            update_job(db_path, job_id, {"status": JobStatus.failed})
+            return get_job(db_path, job_id)
+
+    if job.faq is None:
+        result = run_faq_step(job_id, db_path, llm_client)
         if result is None:
             update_job(db_path, job_id, {"status": JobStatus.failed})
             return get_job(db_path, job_id)
