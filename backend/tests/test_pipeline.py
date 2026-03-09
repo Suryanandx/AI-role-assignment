@@ -3,7 +3,7 @@ import uuid
 
 from app.db import get_job, init_db
 from app.models import CreateJobInput, JobStatus
-from app.pipeline import create_job_step, run_outline_step, run_serp_step
+from app.pipeline import create_job_step, run_article_step, run_outline_step, run_serp_step
 from app.services import MockLLMClient, MockSERPClient
 
 
@@ -132,3 +132,80 @@ def test_run_outline_step_invalid_schema_sets_error():
     assert job.outline is None
     assert job.error is not None
     assert "Outline generation failed" in job.error
+
+
+def test_run_article_step_success():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(
+        CreateJobInput(topic="SEO tips", word_count=1500, language="en"),
+        path,
+    )
+    run_serp_step(job_id, path, MockSERPClient())
+    outline_json = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":["p1"]}]}'
+    run_outline_step(job_id, path, MockLLMClient(response=outline_json))
+    article_json = '{"sections":[{"level":1,"heading":"Intro","content":"First para."}]}'
+    job = run_article_step(job_id, path, MockLLMClient(response=article_json))
+    assert job is not None
+    assert job.article is not None
+    assert len(job.article.sections) == 1
+    assert job.article.sections[0].level == 1
+    assert job.article.sections[0].heading == "Intro"
+    assert job.article.sections[0].content == "First para."
+    assert job.error is None
+
+
+def test_run_article_step_unknown_job_returns_none():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    result = run_article_step(uuid.uuid4(), path, MockLLMClient())
+    assert result is None
+
+
+def test_run_article_step_no_outline_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job = run_article_step(job_id, path, MockLLMClient(response='{"sections":[]}'))
+    assert job is not None
+    assert job.article is None
+    assert job.error is not None
+    assert "no outline" in job.error
+
+
+def test_run_article_step_invalid_json_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    outline_json = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+    run_outline_step(job_id, path, MockLLMClient(response=outline_json))
+    job = run_article_step(job_id, path, MockLLMClient(response="not json"))
+    assert job is not None
+    assert job.article is None
+    assert job.error is not None
+    assert "Article generation failed" in job.error
+
+
+def test_run_article_step_invalid_schema_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    outline_json = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+    run_outline_step(job_id, path, MockLLMClient(response=outline_json))
+    job = run_article_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"level":99,"heading":"Bad","content":"x"}]}'),
+    )
+    assert job is not None
+    assert job.article is None
+    assert job.error is not None
+    assert "Article generation failed" in job.error

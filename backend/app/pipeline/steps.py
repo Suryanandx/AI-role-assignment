@@ -5,7 +5,7 @@ import uuid
 from pydantic import ValidationError
 
 from app.db import create_job, get_job, update_job
-from app.models import CreateJobInput, Job, Outline, SERPAnalysis, SERPResult
+from app.models import Article, CreateJobInput, Job, Outline, SERPAnalysis, SERPResult
 from app.services.llm import GenerateOptions, LLMClient
 from app.services.serp import SERPClient
 
@@ -126,4 +126,55 @@ def run_outline_step(
         update_job(db_path, job_id, {"error": f"Outline generation failed: validation error ({e!s})"})
         return get_job(db_path, job_id)
     update_job(db_path, job_id, {"outline": outline.model_dump(), "error": None})
+    return get_job(db_path, job_id)
+
+
+def _build_article_messages(job: Job) -> list[dict[str, str]]:
+    primary = job.topic
+    if job.serp_analysis and job.serp_analysis.keyword_candidates:
+        primary = job.serp_analysis.keyword_candidates[0]
+    system = (
+        "You are an SEO content writer. Output only valid JSON with no markdown. "
+        'Schema: {"sections": [{"level": 1|2|3, "heading": "...", "content": "..."}]}. '
+        "Use exactly one section with level 1 (H1). Follow the outline. "
+        f"Include the primary keyword \"{primary}\" in the H1 heading and in the first section content. "
+        "Match target word count roughly. Write in the given language."
+    )
+    outline_desc = []
+    for s in job.outline.sections:
+        outline_desc.append(f"[H{s.heading_level}] {s.title}")
+        for bp in (s.bullet_points or [])[:3]:
+            outline_desc.append(f"  - {bp}")
+    parts = [
+        f"Topic: {job.topic}. Target word count: {job.word_count}. Language: {job.language}. Primary keyword: {primary}.",
+        "Outline: " + " | ".join(outline_desc),
+        "Produce a full article in the JSON schema above.",
+    ]
+    user = " ".join(parts)
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def run_article_step(
+    job_id: uuid.UUID,
+    db_path: str,
+    llm_client: LLMClient,
+) -> Job | None:
+    job = get_job(db_path, job_id)
+    if job is None:
+        return None
+    if job.outline is None or not job.outline.sections:
+        update_job(db_path, job_id, {"error": "Article generation failed: no outline"})
+        return get_job(db_path, job_id)
+    messages = _build_article_messages(job)
+    try:
+        response = llm_client.generate(messages, options=GenerateOptions(json_mode=True))
+        data = json.loads(response)
+        article = Article.model_validate(data)
+    except json.JSONDecodeError as e:
+        update_job(db_path, job_id, {"error": f"Article generation failed: invalid JSON ({e!s})"})
+        return get_job(db_path, job_id)
+    except ValidationError as e:
+        update_job(db_path, job_id, {"error": f"Article generation failed: validation error ({e!s})"})
+        return get_job(db_path, job_id)
+    update_job(db_path, job_id, {"article": article.model_dump(), "error": None})
     return get_job(db_path, job_id)
