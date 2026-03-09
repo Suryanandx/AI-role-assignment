@@ -1,5 +1,23 @@
 # AI-role-assignment
 
+## Run backend
+
+Requires Python 3.11+. From the repo root:
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+Optional: create `backend/.env` with `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `SERP_USE_MOCK`, `DB_PATH`. Defaults: Ollama at `http://localhost:11434`, model `llama3`, mock SERP on, DB at `./data/jobs.db`.
+
+Health check: `GET http://localhost:8000/health` returns `{"status": "ok"}`.
+
+---
+
 ## Backend Engineer Position - Take-Home Assessment
 
 ### Context
