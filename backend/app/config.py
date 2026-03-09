@@ -12,3 +12,4 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3"
     serp_use_mock: bool = True
     db_path: str = "./data/jobs.db"
+    quality_score_threshold: float = 0.5
