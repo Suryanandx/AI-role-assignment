@@ -5,7 +5,7 @@ from app.services.llm import (
     OllamaLLMClient,
     get_llm_client,
 )
-from app.services.serp import SERPClient, MockSERPClient, get_serp_client
+from app.services.serp import SERPClient, MockSERPClient, SerpAPIClient, get_serp_client
 
 __all__ = [
     "GenerateOptions",
@@ -15,5 +15,6 @@ __all__ = [
     "get_llm_client",
     "SERPClient",
     "MockSERPClient",
+    "SerpAPIClient",
     "get_serp_client",
 ]

@@ -11,5 +11,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3"
     serp_use_mock: bool = True
+    serp_provider: str = "serpapi"
+    serpapi_key: str | None = None
     db_path: str = "./data/jobs.db"
     quality_score_threshold: float = 0.5

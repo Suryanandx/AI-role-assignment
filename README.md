@@ -33,14 +33,46 @@ npm run dev
 
 App runs at `http://localhost:3000`. Use the job lookup page to query a job by ID (backend must be running).
 
+**Docker (backend, frontend, Ollama, DB):**
+
+Ensure Docker is running, then:
+
+```bash
+docker compose up --build
+```
+
+- Backend: http://localhost:8000 (health: `GET /health`)
+- Frontend: http://localhost:3000
+- Ollama: http://localhost:11434 (real LLM; pipeline uses it when you run a job)
+
+SQLite is stored in volume `backend_data`; Ollama models in `ollama_data`. Pull the default model before running a job (first time or after clearing volumes):
+
+```bash
+docker compose exec ollama ollama pull llama3
+```
+
+Backend in Docker uses `OLLAMA_BASE_URL=http://ollama:11434` and `DB_PATH=/data/jobs.db`. SERP stays mocked unless you add a real SERP API and env vars.
+
 **Optional env:** Create `backend/.env` with:
 
 | Variable        | Default                     | Description              |
 |----------------|-----------------------------|--------------------------|
-| OLLAMA_BASE_URL | http://localhost:11434     | Ollama API base URL      |
+| OLLAMA_BASE_URL | http://localhost:11434     | Ollama API base URL (use `http://ollama:11434` in Docker) |
 | OLLAMA_MODEL   | llama3                      | Model name               |
-| SERP_USE_MOCK  | true                        | Use mock SERP (no API)    |
-| DB_PATH        | ./data/jobs.db              | SQLite database path     |
+| SERP_USE_MOCK  | true                        | Use mock SERP data; set to false to use a real provider |
+| SERP_PROVIDER  | serpapi                     | Real SERP provider when mock is off (only `serpapi` supported) |
+| SERPAPI_KEY    | (none)                      | SerpAPI key; required when SERP_USE_MOCK=false |
+| DB_PATH        | ./data/jobs.db              | SQLite path (`/data/jobs.db` in Docker) |
+
+With `SERP_USE_MOCK=false`, set `SERPAPI_KEY` to a valid SerpAPI key or the pipeline will raise at startup. See `backend/.env.example` for a template.
+
+**Demo script (full pipeline with Ollama):** With the backend and Ollama running (and a model pulled, e.g. `ollama pull llama3`):
+
+```bash
+cd backend && python scripts/run_demo.py "best productivity tools for remote teams"
+```
+
+Creates a job, runs the pipeline, polls until completed or failed, then prints the article summary and FAQ.
 
 ---
 
