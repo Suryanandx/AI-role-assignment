@@ -62,6 +62,8 @@ frontend/         # Next.js app; GraphQL client, job lookup page
   lib/            # GraphQL client
 ```
 
+GraphQL at `/graphql` exposes `job(id)` and `jobs(limit, offset)` for fetching a single job or listing recent jobs (newest first).
+
 ---
 
 ## Tech stack

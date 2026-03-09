@@ -222,6 +222,19 @@ class Query:
             return None
         return _job_to_gql(job)
 
+    @strawberry.field
+    def jobs(
+        self,
+        info: strawberry.Info,
+        limit: int | None = 20,
+        offset: int = 0,
+    ) -> list[JobType]:
+        from app.db import list_jobs
+
+        ctx = info.context
+        jobs_list = list_jobs(ctx["db_path"], limit=limit or 20, offset=offset)
+        return [_job_to_gql(j) for j in jobs_list]
+
 
 @strawberry.type
 class Mutation:
