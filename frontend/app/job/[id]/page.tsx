@@ -9,7 +9,7 @@ import {
   type JobFull,
 } from "@/lib/graphql";
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 2000;
 
 function JobIdCopy({ jobId }: { jobId: string }) {
   const [copied, setCopied] = useState(false);
@@ -94,11 +94,13 @@ export default function JobPage() {
     if (!id || !job || (job.status !== "pending" && job.status !== "running")) {
       return;
     }
-    const timer = setInterval(() => {
+    const fetchJob = () => {
       getJobFull(id).then((data) => {
         if (data) setJob(data);
       });
-    }, POLL_INTERVAL_MS);
+    };
+    fetchJob();
+    const timer = setInterval(fetchJob, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [id, job?.status]);
 
@@ -110,6 +112,12 @@ export default function JobPage() {
       setJob(result);
     } catch {
       setRunLoading(false);
+      try {
+        const latest = await getJobFull(id);
+        if (latest) setJob(latest);
+      } catch {
+        // ignore refetch error
+      }
     } finally {
       setRunLoading(false);
     }

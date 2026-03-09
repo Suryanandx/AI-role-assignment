@@ -1,0 +1,38 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DB_PATH: /data/jobs.db
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3
+      SERP_USE_MOCK: "true"
+    volumes:
+      - backend_data:/data
+    depends_on:
+      - ollama
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_GRAPHQL_URL: http://localhost:8000/graphql
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  backend_data:
+  ollama_data:
