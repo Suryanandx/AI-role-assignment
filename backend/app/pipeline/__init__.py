@@ -1,3 +1,3 @@
-from app.pipeline.steps import create_job_step
+from app.pipeline.steps import create_job_step, run_serp_step
 
-__all__ = ["create_job_step"]
+__all__ = ["create_job_step", "run_serp_step"]
