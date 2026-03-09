@@ -84,6 +84,12 @@ class FAQItemType:
 
 
 @strawberry.type
+class ArticleWithFaqType:
+    sections: list[ArticleSectionType]
+    faq: list[FAQItemType]
+
+
+@strawberry.type
 class JobType:
     id: strawberry.ID
     status: JobStatus
@@ -99,6 +105,7 @@ class JobType:
     external_refs: list[ExternalRefType]
     quality_score: float | None
     faq: list[FAQItemType] | None
+    article_with_faq: ArticleWithFaqType | None
     error: str | None
     created_at: str
     updated_at: str
@@ -167,6 +174,14 @@ def _job_to_gql(job: PydanticJob) -> JobType:
     faq = None
     if job.faq:
         faq = [FAQItemType(question=f.question, answer=f.answer) for f in job.faq]
+    article_with_faq = None
+    if job.article:
+        sections_gql = [
+            ArticleSectionType(level=s.level, heading=s.heading, content=s.content)
+            for s in job.article.sections
+        ]
+        faq_list = [FAQItemType(question=f.question, answer=f.answer) for f in (job.faq or [])]
+        article_with_faq = ArticleWithFaqType(sections=sections_gql, faq=faq_list)
     created_at = job.created_at.isoformat() if job.created_at else ""
     updated_at = job.updated_at.isoformat() if job.updated_at else ""
     return JobType(
@@ -184,6 +199,7 @@ def _job_to_gql(job: PydanticJob) -> JobType:
         external_refs=external_refs,
         quality_score=job.quality_score,
         faq=faq,
+        article_with_faq=article_with_faq,
         error=job.error,
         created_at=created_at,
         updated_at=updated_at,
