@@ -3,7 +3,13 @@ import uuid
 
 from app.db import get_job, init_db
 from app.models import CreateJobInput, JobStatus
-from app.pipeline import create_job_step, run_article_step, run_outline_step, run_serp_step
+from app.pipeline import (
+    create_job_step,
+    run_article_step,
+    run_metadata_step,
+    run_outline_step,
+    run_serp_step,
+)
 from app.services import MockLLMClient, MockSERPClient
 
 
@@ -209,3 +215,91 @@ def test_run_article_step_invalid_schema_sets_error():
     assert job.article is None
     assert job.error is not None
     assert "Article generation failed" in job.error
+
+
+def _run_serp_outline_article(path, job_id):
+    run_serp_step(job_id, path, MockSERPClient())
+    run_outline_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'),
+    )
+    run_article_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"level":1,"heading":"Intro","content":"First para."}]}'),
+    )
+
+
+def test_run_metadata_step_success():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="SEO tips", word_count=1500, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    metadata_json = (
+        '{"title_tag":"SEO Tips Guide","meta_description":"Learn SEO tips for your site. Read our guide.",'
+        '"primary_keyword":"SEO tips","secondary_keywords":["keywords","content"],'
+        '"internal_links":[{"anchor_text":"keyword research","target_topic":"research"},'
+        '{"anchor_text":"content","target_topic":"content strategy"}],'
+        '"external_refs":[{"url":"https://example.com/1","title":"Source 1","placement_context":"intro"}]}'
+    )
+    job = run_metadata_step(job_id, path, MockLLMClient(response=metadata_json))
+    assert job is not None
+    assert job.metadata is not None
+    assert job.metadata.title_tag == "SEO Tips Guide"
+    assert len(job.metadata.title_tag) <= 60
+    assert 0 < len(job.metadata.meta_description) <= 160
+    assert job.metadata.primary_keyword == "SEO tips"
+    assert len(job.internal_links) >= 1 and len(job.internal_links) <= 5
+    assert len(job.external_refs) >= 1 and len(job.external_refs) <= 4
+    assert job.error is None
+
+
+def test_run_metadata_step_unknown_job_returns_none():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    result = run_metadata_step(uuid.uuid4(), path, MockLLMClient())
+    assert result is None
+
+
+def test_run_metadata_step_no_article_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job = run_metadata_step(job_id, path, MockLLMClient(response="{}"))
+    assert job is not None
+    assert job.error is not None
+    assert "no article" in job.error
+
+
+def test_run_metadata_step_invalid_json_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    job = run_metadata_step(job_id, path, MockLLMClient(response="not json"))
+    assert job is not None
+    assert job.error is not None
+    assert "Metadata step failed" in job.error
+
+
+def test_run_metadata_step_invalid_schema_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    invalid_json = (
+        '{"title_tag":"X","meta_description":"Desc.","primary_keyword":"x","secondary_keywords":[],'
+        '"internal_links":[{"anchor_text":"ok","target_topic":"t"},{"target_topic":"missing_anchor"}],'
+        '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"intro"}]}'
+    )
+    job = run_metadata_step(job_id, path, MockLLMClient(response=invalid_json))
+    assert job is not None
+    assert job.error is not None
+    assert "Metadata step failed" in job.error
