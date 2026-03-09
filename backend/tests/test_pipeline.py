@@ -8,6 +8,7 @@ from app.pipeline import (
     run_article_step,
     run_metadata_step,
     run_outline_step,
+    run_pipeline,
     run_serp_step,
     run_validation_step,
 )
@@ -392,3 +393,91 @@ def test_run_validation_step_keyword_in_h1_and_intro_reflects_in_score():
     assert job is not None
     assert job.quality_score is not None
     assert job.quality_score >= 0.25
+
+
+class _MultiResponseLLM:
+    """Mock LLM that returns the next response from a list on each generate() call."""
+
+    def __init__(self, responses: list[str]):
+        self._responses = list(responses)
+
+    def generate(self, messages, *, options=None):
+        if not self._responses:
+            return "{}"
+        return self._responses.pop(0)
+
+
+def test_run_pipeline_full_run_to_completion():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="SEO guide", word_count=1500, language="en"), path)
+    outline_json = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+    article_json = '{"sections":[{"level":1,"heading":"SEO guide","content":"This is the intro."}]}'
+    metadata_json = (
+        '{"title_tag":"SEO Guide","meta_description":"Learn SEO. Read more.",'
+        '"primary_keyword":"SEO guide","secondary_keywords":[],'
+        '"internal_links":[{"anchor_text":"a","target_topic":"t1"},{"anchor_text":"b","target_topic":"t2"}],'
+        '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"intro"}]}'
+    )
+    llm = _MultiResponseLLM([outline_json, article_json, metadata_json])
+    job = run_pipeline(job_id, path, MockSERPClient(), llm)
+    assert job is not None
+    assert job.status == JobStatus.completed
+    assert job.serp_analysis is not None
+    assert job.outline is not None
+    assert job.article is not None
+    assert job.metadata is not None
+    assert job.quality_score is not None
+    assert job.error is None
+
+
+def test_run_pipeline_unknown_job_returns_none():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    result = run_pipeline(uuid.uuid4(), path, MockSERPClient(), MockLLMClient())
+    assert result is None
+
+
+def test_run_pipeline_resume_skips_completed_steps():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Resume topic", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job_before = get_job(path, job_id)
+    assert job_before is not None
+    serp_themes = job_before.serp_analysis.themes if job_before.serp_analysis else []
+
+    outline_json = '{"sections":[{"heading_level":1,"title":"Resume","bullet_points":[]}]}'
+    article_json = '{"sections":[{"level":1,"heading":"Resume","content":"Content."}]}'
+    metadata_json = (
+        '{"title_tag":"Resume","meta_description":"Resume guide.",'
+        '"primary_keyword":"Resume topic","secondary_keywords":[],'
+        '"internal_links":[{"anchor_text":"x","target_topic":"y"}],'
+        '"external_refs":[{"url":"https://a.com","title":"A","placement_context":"body"}]}'
+    )
+    llm = _MultiResponseLLM([outline_json, article_json, metadata_json])
+    job = run_pipeline(job_id, path, MockSERPClient(), llm)
+    assert job is not None
+    assert job.status == JobStatus.completed
+    assert job.serp_analysis is not None
+    assert job.serp_analysis.themes == serp_themes
+    assert job.outline is not None
+    assert job.article is not None
+    assert job.metadata is not None
+    assert job.quality_score is not None
+
+
+def test_run_pipeline_failure_sets_status_failed():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Fail topic", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    llm = _MultiResponseLLM(["not valid json"])
+    job = run_pipeline(job_id, path, MockSERPClient(), llm)
+    assert job is not None
+    assert job.status == JobStatus.failed
+    assert job.error is not None

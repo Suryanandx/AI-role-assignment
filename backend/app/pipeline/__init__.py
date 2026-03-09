@@ -3,6 +3,7 @@ from app.pipeline.steps import (
     run_article_step,
     run_metadata_step,
     run_outline_step,
+    run_pipeline,
     run_serp_step,
     run_validation_step,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "run_article_step",
     "run_metadata_step",
     "run_outline_step",
+    "run_pipeline",
     "run_serp_step",
     "run_validation_step",
 ]
