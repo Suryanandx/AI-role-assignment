@@ -260,3 +260,92 @@ def run_metadata_step(
         },
     )
     return get_job(db_path, job_id)
+
+
+def _compute_quality_score(job: Job) -> float:
+    """Rule-based SEO checks; returns a score in [0.0, 1.0]."""
+    scores: list[float] = []
+    article = job.article
+    if not article or not article.sections:
+        return 0.0
+
+    primary = job.topic
+    if job.metadata:
+        primary = job.metadata.primary_keyword
+    elif job.serp_analysis and job.serp_analysis.keyword_candidates:
+        primary = job.serp_analysis.keyword_candidates[0]
+    primary_lower = primary.lower()
+
+    first = article.sections[0]
+    h1_count = sum(1 for s in article.sections if s.level == 1)
+
+    if primary_lower in (first.heading or "").lower():
+        scores.append(1.0)
+    else:
+        scores.append(0.0)
+
+    intro = (first.content or "")[:500]
+    if primary_lower in intro.lower():
+        scores.append(1.0)
+    else:
+        scores.append(0.0)
+
+    if h1_count == 1:
+        scores.append(1.0)
+    else:
+        scores.append(0.0)
+
+    first_is_h1 = first.level == 1
+    no_other_h1 = h1_count <= 1
+    if first_is_h1 and no_other_h1:
+        scores.append(1.0)
+    else:
+        scores.append(0.0)
+
+    if job.metadata:
+        tt_len = len((job.metadata.title_tag or "").strip())
+        if 1 <= tt_len <= 60:
+            scores.append(1.0)
+        elif tt_len <= 70:
+            scores.append(0.5)
+        else:
+            scores.append(0.0)
+        md_len = len((job.metadata.meta_description or "").strip())
+        if 150 <= md_len <= 160:
+            scores.append(1.0)
+        elif 140 <= md_len <= 165:
+            scores.append(0.5)
+        else:
+            scores.append(0.0)
+    else:
+        scores.extend([0.0, 0.0])
+
+    n_internal = len(job.internal_links or [])
+    if 3 <= n_internal <= 5:
+        scores.append(1.0)
+    elif 1 <= n_internal <= 5:
+        scores.append(0.5)
+    else:
+        scores.append(0.0)
+
+    n_external = len(job.external_refs or [])
+    if 2 <= n_external <= 4:
+        scores.append(1.0)
+    elif n_external == 1:
+        scores.append(0.5)
+    else:
+        scores.append(0.0)
+
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+def run_validation_step(job_id: uuid.UUID, db_path: str) -> Job | None:
+    job = get_job(db_path, job_id)
+    if job is None:
+        return None
+    if job.article is None or not job.article.sections:
+        update_job(db_path, job_id, {"error": "Validation step failed: no article"})
+        return get_job(db_path, job_id)
+    score = _compute_quality_score(job)
+    update_job(db_path, job_id, {"quality_score": score, "error": None})
+    return get_job(db_path, job_id)

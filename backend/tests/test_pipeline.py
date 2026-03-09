@@ -9,6 +9,7 @@ from app.pipeline import (
     run_metadata_step,
     run_outline_step,
     run_serp_step,
+    run_validation_step,
 )
 from app.services import MockLLMClient, MockSERPClient
 
@@ -303,3 +304,91 @@ def test_run_metadata_step_invalid_schema_sets_error():
     assert job is not None
     assert job.error is not None
     assert "Metadata step failed" in job.error
+
+
+def test_run_validation_step_success_high_score():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="SEO tips", word_count=1500, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    run_outline_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'),
+    )
+    article_json = (
+        '{"sections":[{"level":1,"heading":"SEO tips for beginners","content":"SEO tips help your site rank. Start here."}]}'
+    )
+    run_article_step(job_id, path, MockLLMClient(response=article_json))
+    metadata_json = (
+        '{"title_tag":"SEO Tips Guide - 50 chars here exactly right",'
+        '"meta_description":"Learn SEO tips for your site. Read our guide and improve rankings today. More text here.",'
+        '"primary_keyword":"SEO tips","secondary_keywords":["keywords"],'
+        '"internal_links":'
+        '[{"anchor_text":"a","target_topic":"t1"},{"anchor_text":"b","target_topic":"t2"},{"anchor_text":"c","target_topic":"t3"},{"anchor_text":"d","target_topic":"t4"}],'
+        '"external_refs":[{"url":"https://a.com","title":"A","placement_context":"intro"},'
+        '{"url":"https://b.com","title":"B","placement_context":"body"},{"url":"https://c.com","title":"C","placement_context":"end"}]}'
+    )
+    run_metadata_step(job_id, path, MockLLMClient(response=metadata_json))
+    job = run_validation_step(job_id, path)
+    assert job is not None
+    assert job.quality_score is not None
+    assert 0 <= job.quality_score <= 1
+    assert job.quality_score >= 0.7
+    assert job.error is None
+
+
+def test_run_validation_step_unknown_job_returns_none():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    result = run_validation_step(uuid.uuid4(), path)
+    assert result is None
+
+
+def test_run_validation_step_no_article_sets_error():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    job = run_validation_step(job_id, path)
+    assert job is not None
+    assert job.error is not None
+    assert "no article" in job.error
+    assert job.quality_score is None
+
+
+def test_run_validation_step_low_score_when_data_missing():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="x", word_count=1000, language="en"), path)
+    _run_serp_outline_article(path, job_id)
+    job = run_validation_step(job_id, path)
+    assert job is not None
+    assert job.quality_score is not None
+    assert 0 <= job.quality_score <= 1
+    assert job.quality_score < 0.6
+
+
+def test_run_validation_step_keyword_in_h1_and_intro_reflects_in_score():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="productivity", word_count=1500, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    run_outline_step(
+        job_id,
+        path,
+        MockLLMClient(response='{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'),
+    )
+    article_json = (
+        '{"sections":[{"level":1,"heading":"Productivity tips","content":"Boost productivity with these steps."}]}'
+    )
+    run_article_step(job_id, path, MockLLMClient(response=article_json))
+    job = run_validation_step(job_id, path)
+    assert job is not None
+    assert job.quality_score is not None
+    assert job.quality_score >= 0.25
