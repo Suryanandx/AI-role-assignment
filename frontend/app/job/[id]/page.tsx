@@ -9,6 +9,8 @@ import {
   type JobFull,
 } from "@/lib/graphql";
 
+const POLL_INTERVAL_MS = 3000;
+
 function JobIdCopy({ jobId }: { jobId: string }) {
   const [copied, setCopied] = useState(false);
   async function handleCopy() {
@@ -63,6 +65,7 @@ export default function JobPage() {
   const [job, setJob] = useState<JobFull | null>(null);
   const [loading, setLoading] = useState(true);
   const [runLoading, setRunLoading] = useState(false);
+  const [refreshLoading, setRefreshLoading] = useState(false);
 
   useEffect(() => {
     if (!id) {
@@ -87,6 +90,18 @@ export default function JobPage() {
     };
   }, [id]);
 
+  useEffect(() => {
+    if (!id || !job || (job.status !== "pending" && job.status !== "running")) {
+      return;
+    }
+    const timer = setInterval(() => {
+      getJobFull(id).then((data) => {
+        if (data) setJob(data);
+      });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [id, job?.status]);
+
   async function handleRunPipeline() {
     if (!id) return;
     setRunLoading(true);
@@ -97,6 +112,17 @@ export default function JobPage() {
       setRunLoading(false);
     } finally {
       setRunLoading(false);
+    }
+  }
+
+  async function handleRefresh() {
+    if (!id) return;
+    setRefreshLoading(true);
+    try {
+      const data = await getJobFull(id);
+      if (data) setJob(data);
+    } finally {
+      setRefreshLoading(false);
     }
   }
 
@@ -152,9 +178,20 @@ export default function JobPage() {
               </span>
             )}
           </div>
-          <div>
-            <span className="label">Job ID</span>
-            <JobIdCopy jobId={id} />
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: "0.5rem" }}>
+            <div>
+              <span className="label">Job ID</span>
+              <JobIdCopy jobId={id} />
+            </div>
+            <button
+              type="button"
+              className="btn btnSecondary"
+              onClick={handleRefresh}
+              disabled={refreshLoading}
+              style={{ padding: "0.35rem 0.75rem", fontSize: "0.875rem" }}
+            >
+              {refreshLoading ? "Refreshing…" : "Refresh"}
+            </button>
           </div>
           {(job.status === "pending" || (job.status === "running" && runLoading)) && (
             <div style={{ marginTop: "0.5rem" }}>
@@ -285,8 +322,8 @@ export default function JobPage() {
 
       {job.status === "running" && !runLoading && (
         <section className="card">
-          <p style={{ color: "var(--muted)" }}>
-            Pipeline is running. Refresh the page to check status, or wait and check back.
+          <p style={{ color: "var(--muted)", margin: 0 }}>
+            Pipeline running… (this may take a minute). Status updates automatically.
           </p>
         </section>
       )}
