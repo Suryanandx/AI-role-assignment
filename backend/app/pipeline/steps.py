@@ -1,8 +1,12 @@
+import json
 import re
 import uuid
 
+from pydantic import ValidationError
+
 from app.db import create_job, get_job, update_job
-from app.models import CreateJobInput, Job, SERPAnalysis, SERPResult
+from app.models import CreateJobInput, Job, Outline, SERPAnalysis, SERPResult
+from app.services.llm import GenerateOptions, LLMClient
 from app.services.serp import SERPClient
 
 _STOPWORDS = frozenset(
@@ -81,3 +85,45 @@ def run_serp_step(
         },
     )
     return updated
+
+
+def _build_outline_messages(job: Job) -> list[dict[str, str]]:
+    system = (
+        "You are an SEO content outline writer. Output only valid JSON with no markdown or explanation. "
+        'Schema: {"sections": [{"heading_level": 1|2|3, "title": "...", "bullet_points": ["...", ...]}]}. '
+        "Use exactly one H1 (heading_level 1). Use H2/H3 in order. bullet_points is optional per section."
+    )
+    parts = [f"Topic: {job.topic}. Target word count: {job.word_count}. Language: {job.language}."]
+    if job.serp_analysis:
+        if job.serp_analysis.themes:
+            parts.append(f"Themes: {', '.join(job.serp_analysis.themes[:8])}.")
+        if job.serp_analysis.subtopics:
+            parts.append(f"Subtopics to consider: {', '.join(job.serp_analysis.subtopics[:5])}.")
+        if job.serp_analysis.keyword_candidates:
+            parts.append(f"Keyword candidates: {', '.join(job.serp_analysis.keyword_candidates[:10])}.")
+    parts.append("Produce a content outline in the JSON schema above.")
+    user = " ".join(parts)
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def run_outline_step(
+    job_id: uuid.UUID,
+    db_path: str,
+    llm_client: LLMClient,
+) -> Job | None:
+    job = get_job(db_path, job_id)
+    if job is None:
+        return None
+    messages = _build_outline_messages(job)
+    try:
+        response = llm_client.generate(messages, options=GenerateOptions(json_mode=True))
+        data = json.loads(response)
+        outline = Outline.model_validate(data)
+    except json.JSONDecodeError as e:
+        update_job(db_path, job_id, {"error": f"Outline generation failed: invalid JSON ({e!s})"})
+        return get_job(db_path, job_id)
+    except ValidationError as e:
+        update_job(db_path, job_id, {"error": f"Outline generation failed: validation error ({e!s})"})
+        return get_job(db_path, job_id)
+    update_job(db_path, job_id, {"outline": outline.model_dump(), "error": None})
+    return get_job(db_path, job_id)
