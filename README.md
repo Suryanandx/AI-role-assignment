@@ -20,7 +20,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Server runs at `http://localhost:8000`. Health: `GET /health` returns `{"status": "ok"}`.
+Server runs at `http://localhost:8000`. Health: `GET /health` returns `{"status": "ok"}`. Optional: `GET /ready` pings Ollama and returns `{"ready": true, "ollama": "ok"}` or `{"ready": false, "ollama": "unreachable"}`.
 
 **Frontend (Next.js):**
 
@@ -41,17 +41,17 @@ Ensure Docker is running, then:
 docker compose up --build
 ```
 
-- Backend: http://localhost:8000 (health: `GET /health`)
+- Backend: http://localhost:8000 (health: `GET /health`). The backend service has a healthcheck; the table is created automatically on startup via `init_db` (no manual migrations).
 - Frontend: http://localhost:3000
-- Ollama: http://localhost:11434 (real LLM; pipeline uses it when you run a job)
+- Ollama: http://localhost:11434 (real LLM; pipeline uses it when you run a job). Optional healthcheck; ensure the model is pulled before running jobs.
 
-SQLite is stored in volume `backend_data`; Ollama models in `ollama_data`. Pull the default model before running a job (first time or after clearing volumes):
+SQLite is stored in volume `backend_data` at `/data/jobs.db`; the DB and table are created automatically on first startup. Ollama models live in `ollama_data`. Pull the default model before running a job (first time or after clearing volumes):
 
 ```bash
 docker compose exec ollama ollama pull llama3
 ```
 
-Backend in Docker uses `OLLAMA_BASE_URL=http://ollama:11434` and `DB_PATH=/data/jobs.db`. SERP stays mocked unless you add a real SERP API and env vars.
+Backend in Docker uses `OLLAMA_BASE_URL=http://ollama:11434` and `DB_PATH=/data/jobs.db`. SERP is mock by default (`SERP_USE_MOCK=true`). For real SERP in Docker, set `SERP_USE_MOCK=false` and `SERPAPI_KEY` in the backend service environment.
 
 **Optional env:** Create `backend/.env` with:
 
@@ -74,6 +74,10 @@ cd backend && python scripts/run_demo.py "best productivity tools for remote tea
 
 Creates a job, runs the pipeline, polls until completed or failed, then prints the article summary and FAQ.
 
+**E2E verification:** (1) Start backend and Ollama (or `docker compose up`). (2) Pull model: `ollama pull llama3` (or `docker compose exec ollama ollama pull llama3`). (3) Create a job (UI or `run_demo.py`). (4) Run pipeline and wait for completion. (5) Open the job in the UI: status "completed", article sections, metadata, FAQ, internal/external links. (6) On the home page, confirm "Recent jobs" lists the job and "View" opens the job page.
+
+Quick API check (no pipeline): from repo root with backend running, `cd backend && python scripts/e2e_verify.py`. Checks health, createJob, jobs list, and job(id).
+
 ---
 
 ## Project structure
@@ -94,7 +98,52 @@ frontend/         # Next.js app; GraphQL client, job lookup page
   lib/            # GraphQL client
 ```
 
-GraphQL at `/graphql` exposes `job(id)` and `jobs(limit, offset)` for fetching a single job or listing recent jobs (newest first).
+GraphQL at `/graphql` exposes `job(id)` and `jobs(limit, offset)` for fetching a single job or listing recent jobs (newest first). All pipeline outputs (article, SEO metadata, FAQ, internal links, external refs, quality score) are saved to the SQLite DB at each step; a completed job returned by `job(id)` includes the full saved data.
+
+---
+
+## Example: input and output
+
+**Input** (e.g. via `createJob` then `runPipeline`, or the demo script):
+
+- **Topic:** `best productivity tools for remote teams`
+- **Word count:** 1500
+- **Language:** en
+
+**Output** (abbreviated shape of `job(id)` when status is `completed`):
+
+```json
+{
+  "id": "<uuid>",
+  "status": "completed",
+  "topic": "best productivity tools for remote teams",
+  "metadata": {
+    "titleTag": "Best Productivity Tools for Remote Teams in 2024",
+    "metaDescription": "Discover the top productivity tools for remote teams. Compare features, pricing, and integrations to boost your distributed team's output.",
+    "primaryKeyword": "productivity tools for remote teams"
+  },
+  "article": {
+    "sections": [
+      { "level": 1, "heading": "Best Productivity Tools for Remote Teams", "content": "Remote work has made team productivity tools essential. This guide covers the top options..." },
+      { "level": 2, "heading": "What to Look for in Remote Team Tools", "content": "Key features include real-time collaboration, task tracking, and integrations..." }
+    ]
+  },
+  "faq": [
+    { "question": "What are the best productivity tools for remote teams?", "answer": "Popular choices include tools for chat, project management, and document collaboration." },
+    { "question": "How do remote team tools improve productivity?", "answer": "They centralize communication, automate workflows, and keep tasks visible." }
+  ],
+  "internalLinks": [
+    { "anchorText": "remote work setup", "targetTopic": "home office setup guide" },
+    { "anchorText": "async communication", "targetTopic": "async vs sync communication" }
+  ],
+  "externalRefs": [
+    { "url": "https://example.com/remote-tools", "title": "Remote Work Tools Report", "placementContext": "intro" }
+  ],
+  "qualityScore": 0.82
+}
+```
+
+Run `python scripts/run_demo.py "best productivity tools for remote teams"` to produce a real completed job and see the full output.
 
 ---
 
@@ -117,6 +166,15 @@ From `backend/`:
 source .venv/bin/activate
 pytest tests/ -v
 ```
+
+---
+
+## Design decisions
+
+- **GraphQL:** Single endpoint at `/graphql` with flexible queries (`job(id)`, `jobs(limit, offset)`). Fits the nested shape of a job (article, metadata, FAQ, links) and keeps the frontend to one API.
+- **SQLite:** One-table persistence with `init_db` on startup; no separate DB server. Sufficient for the take-home and keeps local/Docker setup simple.
+- **Ollama:** Local LLM with an OpenAI-compatible API. The pipeline uses it for outline, article, metadata, FAQ, and optional revision; no API keys for development.
+- **Persist every step:** Each pipeline step writes its result to the DB. Jobs survive restarts and can resume from the last completed step; the frontend and API always read the current state from the DB.
 
 ---
 
