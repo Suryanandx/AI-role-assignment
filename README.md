@@ -6,6 +6,8 @@ Backend service that generates SEO-optimized articles from a topic: SERP researc
 
 **Author:** [Suryanand](https://github.com/suryanandx) | GitHub: [suryanandx](https://github.com/suryanandx) | Email: [work@suryanand.com](mailto:work@suryanand.com)
 
+**Contents:** [How to run](#how-to-run) · [Project structure](#project-structure) · [Architecture](#architecture) · [Example](#example-input-and-output) · [Tech stack](#tech-stack) · [Tests](#tests) · [Original brief](#original-assignment-brief)
+
 ---
 
 ## How to run
@@ -102,6 +104,127 @@ GraphQL at `/graphql` exposes `job(id)` and `jobs(limit, offset)` for fetching a
 
 ---
 
+## Architecture
+
+### System overview
+
+```mermaid
+flowchart TB
+  subgraph client [Client]
+    User[User]
+    Frontend[Next.js Frontend]
+    User <--> Frontend
+  end
+
+  subgraph backend [Backend]
+    API[FastAPI]
+    GraphQL[GraphQL API]
+    Pipeline[Pipeline Engine]
+    API --> GraphQL
+    API --> Pipeline
+  end
+
+  subgraph storage [Storage and external]
+    DB[(SQLite)]
+    Ollama[Ollama LLM]
+    SERP[SERP Mock or SerpAPI]
+  end
+
+  Frontend -->|"HTTP / GraphQL"| GraphQL
+  Pipeline --> DB
+  Pipeline --> Ollama
+  Pipeline --> SERP
+  GraphQL --> DB
+```
+
+### Pipeline flow
+
+The pipeline runs in order; each step persists its output so the job can resume after a restart.
+
+```mermaid
+flowchart LR
+  A[Create Job] --> B[SERP]
+  B --> C[Outline]
+  C --> D[Article]
+  D --> E[Metadata and links]
+  E --> F[FAQ]
+  F --> G[Validation]
+  G --> H{Score OK?}
+  H -->|Yes| Done[Completed]
+  H -->|No| I[Revision]
+  I --> G
+```
+
+### Component connections
+
+```mermaid
+flowchart LR
+  subgraph browser [Browser]
+    UI[Job form and job page]
+  end
+
+  subgraph api [Backend API]
+    Health["/health"]
+    GQL["/graphql"]
+    WS["/ws/jobs/:id"]
+  end
+
+  subgraph data [Data and services]
+    SQLite[(SQLite jobs)]
+    LLM[Ollama]
+    SERPClient[SERP client]
+  end
+
+  UI -->|"createJob, runPipeline, job, jobs"| GQL
+  UI -->|"optional live updates"| WS
+  GQL --> SQLite
+  GQL --> LLM
+  GQL --> SERPClient
+  Health --> SQLite
+```
+
+### Database schema
+
+Single table `jobs`; JSON columns store nested structures (serp_raw, outline, article, metadata, etc.).
+
+```mermaid
+erDiagram
+  jobs {
+    string id PK
+    string status
+    string topic
+    int word_count
+    string language
+    string current_step
+    string serp_raw
+    string serp_analysis
+    string outline
+    string article
+    string metadata
+    string internal_links
+    string external_refs
+    float quality_score
+    string faq
+    string error
+    string created_at
+    string updated_at
+  }
+```
+
+Nested data (SERP results, outline, article sections, metadata, links, FAQ) is stored as JSON in the corresponding string columns.
+
+### Architecture decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **GraphQL** | Single endpoint; queries `job(id)` and `jobs(limit, offset)` match the nested job shape (article, metadata, FAQ, links). Frontend stays with one API. |
+| **SQLite** | One table, `init_db` on startup, no separate DB process. Fits take-home scope and keeps local/Docker setup simple. |
+| **Ollama** | Local LLM with OpenAI-compatible API. Used for outline, article, metadata, FAQ, and optional revision; no API keys for development. |
+| **Persist every step** | Each pipeline step writes to the DB. Jobs survive restarts and resume from the last completed step; UI and API always read current state from DB. |
+| **SERP mock vs real** | Mock by default for offline use; set `SERP_USE_MOCK=false` and `SERPAPI_KEY` for real SerpAPI in production or E2E. |
+
+---
+
 ## Example: input and output
 
 **Input** (e.g. via `createJob` then `runPipeline`, or the demo script):
@@ -151,7 +274,7 @@ Run `python scripts/run_demo.py "best productivity tools for remote teams"` to p
 
 - **API:** FastAPI
 - **Config:** pydantic-settings
-- **GraphQL:** Strawberry (planned)
+- **GraphQL:** Strawberry
 - **LLM:** Ollama (OpenAI-compatible)
 - **DB:** SQLite
 - **Tests:** pytest, pytest-asyncio
@@ -167,14 +290,7 @@ source .venv/bin/activate
 pytest tests/ -v
 ```
 
----
-
-## Design decisions
-
-- **GraphQL:** Single endpoint at `/graphql` with flexible queries (`job(id)`, `jobs(limit, offset)`). Fits the nested shape of a job (article, metadata, FAQ, links) and keeps the frontend to one API.
-- **SQLite:** One-table persistence with `init_db` on startup; no separate DB server. Sufficient for the take-home and keeps local/Docker setup simple.
-- **Ollama:** Local LLM with an OpenAI-compatible API. The pipeline uses it for outline, article, metadata, FAQ, and optional revision; no API keys for development.
-- **Persist every step:** Each pipeline step writes its result to the DB. Jobs survive restarts and can resume from the last completed step; the frontend and API always read the current state from the DB.
+See the [Architecture](#architecture) section for system overview, pipeline flow, component connections, DB schema, and architecture decisions.
 
 ---
 
