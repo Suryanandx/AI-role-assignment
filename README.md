@@ -6,6 +6,8 @@ Backend service that generates SEO-optimized articles from a topic: SERP researc
 
 **Author:** [Suryanand](https://github.com/suryanandx) | GitHub: [suryanandx](https://github.com/suryanandx) | Email: [work@suryanand.com](mailto:work@suryanand.com)
 
+**Demo video:** [Watch on Loom](https://www.loom.com/share/a009c49ee04a422098b961dcf344d34a)
+
 **Contents:** [How to run](#how-to-run) · [Project structure](#project-structure) · [Architecture](#architecture) · [Example](#example-input-and-output) · [Tech stack](#tech-stack) · [Tests](#tests) · [Original brief](#original-assignment-brief)
 
 ---
