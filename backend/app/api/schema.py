@@ -96,6 +96,7 @@ class JobType:
     topic: str
     word_count: int
     language: str
+    current_step: str | None
     serp_raw: list[SERPResultType] | None
     serp_analysis: SERPAnalysisType | None
     outline: OutlineType | None
@@ -120,7 +121,7 @@ class CreateJobInputType:
 
 def _job_to_gql(job: PydanticJob) -> JobType:
     serp_raw = None
-    if job.serp_raw:
+    if job.serp_raw is not None:
         serp_raw = [
             SERPResultType(rank=r.rank, url=r.url, title=r.title, snippet=r.snippet)
             for r in job.serp_raw
@@ -172,7 +173,7 @@ def _job_to_gql(job: PydanticJob) -> JobType:
         for r in (job.external_refs or [])
     ]
     faq = None
-    if job.faq:
+    if job.faq is not None:
         faq = [FAQItemType(question=f.question, answer=f.answer) for f in job.faq]
     article_with_faq = None
     if job.article:
@@ -190,6 +191,7 @@ def _job_to_gql(job: PydanticJob) -> JobType:
         topic=job.topic,
         word_count=job.word_count,
         language=job.language,
+        current_step=job.current_step,
         serp_raw=serp_raw,
         serp_analysis=serp_analysis,
         outline=outline,
@@ -228,11 +230,13 @@ class Query:
         info: strawberry.Info,
         limit: int | None = 20,
         offset: int = 0,
+        status: JobStatus | None = None,
     ) -> list[JobType]:
         from app.db import list_jobs
 
         ctx = info.context
-        jobs_list = list_jobs(ctx["db_path"], limit=limit or 20, offset=offset)
+        status_str = status.value if status is not None else None
+        jobs_list = list_jobs(ctx["db_path"], limit=limit or 20, offset=offset, status=status_str)
         return [_job_to_gql(j) for j in jobs_list]
 
 
@@ -262,6 +266,31 @@ class Mutation:
         except ValueError:
             return None
         ctx = info.context
+        job = run_pipeline(
+            uid,
+            ctx["db_path"],
+            ctx["serp_client"],
+            ctx["llm_client"],
+        )
+        if job is None:
+            return None
+        return _job_to_gql(job)
+
+    @strawberry.mutation(name="retryJob")
+    def retry_job(self, job_id: strawberry.ID, info: strawberry.Info) -> JobType | None:
+        from app.db import get_job, update_job
+        from app.pipeline import run_pipeline
+
+        try:
+            uid = uuid.UUID(str(job_id))
+        except ValueError:
+            return None
+        ctx = info.context
+        existing = get_job(ctx["db_path"], uid)
+        if existing is None:
+            return None
+        # Reset error and status so pipeline can resume from last checkpoint
+        update_job(ctx["db_path"], uid, {"status": "pending", "error": None, "current_step": None})
         job = run_pipeline(
             uid,
             ctx["db_path"],

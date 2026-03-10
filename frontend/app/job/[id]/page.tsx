@@ -6,10 +6,58 @@ import { useEffect, useState } from "react";
 import {
   getJobFull,
   runPipeline,
+  retryJob,
   type JobFull,
 } from "@/lib/graphql";
 
 const POLL_INTERVAL_MS = 2000;
+
+const STEP_LABELS: Record<string, string> = {
+  serp_analysis: "SERP Analysis",
+  outline: "Outline Generation",
+  article: "Article Writing",
+  metadata: "Metadata & Links",
+  faq: "FAQ Generation",
+  validation: "Validation",
+  revision: "Revision",
+};
+
+const STEP_ORDER = ["serp_analysis", "outline", "article", "metadata", "faq", "validation"];
+
+function PipelineProgress({ currentStep }: { currentStep: string | null }) {
+  if (!currentStep) return null;
+  const currentIndex = STEP_ORDER.indexOf(currentStep);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", marginTop: "0.5rem" }}>
+      <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>Pipeline progress</span>
+      <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
+        {STEP_ORDER.map((step, i) => {
+          const isDone = i < currentIndex;
+          const isActive = step === currentStep;
+          return (
+            <span
+              key={step}
+              style={{
+                fontSize: "0.75rem",
+                padding: "0.2rem 0.5rem",
+                borderRadius: "var(--radius)",
+                background: isDone
+                  ? "var(--success, #22c55e)"
+                  : isActive
+                    ? "var(--accent)"
+                    : "var(--card-border)",
+                color: isDone || isActive ? "#fff" : "var(--muted)",
+                fontWeight: isActive ? 600 : 400,
+              }}
+            >
+              {STEP_LABELS[step] ?? step}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function JobIdCopy({ jobId }: { jobId: string }) {
   const [copied, setCopied] = useState(false);
@@ -65,6 +113,7 @@ export default function JobPage() {
   const [job, setJob] = useState<JobFull | null>(null);
   const [loading, setLoading] = useState(true);
   const [runLoading, setRunLoading] = useState(false);
+  const [retryLoading, setRetryLoading] = useState(false);
   const [refreshLoading, setRefreshLoading] = useState(false);
 
   useEffect(() => {
@@ -120,6 +169,25 @@ export default function JobPage() {
       }
     } finally {
       setRunLoading(false);
+    }
+  }
+
+  async function handleRetry() {
+    if (!id) return;
+    setRetryLoading(true);
+    try {
+      const result = await retryJob(id);
+      setJob(result);
+    } catch {
+      setRetryLoading(false);
+      try {
+        const latest = await getJobFull(id);
+        if (latest) setJob(latest);
+      } catch {
+        // ignore refetch error
+      }
+    } finally {
+      setRetryLoading(false);
     }
   }
 
@@ -229,7 +297,15 @@ export default function JobPage() {
       {job.status === "failed" && (
         <section className="card" style={{ borderColor: "var(--danger)" }}>
           <h2>Error</h2>
-          <p style={{ color: "var(--danger)", margin: 0 }}>{job.error}</p>
+          <p style={{ color: "var(--danger)", marginBottom: "0.75rem" }}>{job.error}</p>
+          <button
+            type="button"
+            className="btn btnPrimary"
+            onClick={handleRetry}
+            disabled={retryLoading}
+          >
+            {retryLoading ? "Retrying…" : "Retry from last checkpoint"}
+          </button>
         </section>
       )}
 
@@ -330,9 +406,10 @@ export default function JobPage() {
 
       {job.status === "running" && !runLoading && (
         <section className="card">
-          <p style={{ color: "var(--muted)", margin: 0 }}>
-            Pipeline running… (this may take a minute). Status updates automatically.
+          <p style={{ color: "var(--muted)", marginBottom: "0.5rem" }}>
+            Pipeline running… Status updates automatically.
           </p>
+          <PipelineProgress currentStep={job.current_step} />
         </section>
       )}
     </div>

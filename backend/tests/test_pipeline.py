@@ -696,6 +696,40 @@ def test_quality_scorer_bad_heading_order_lower_score():
     assert 0 <= job.quality_score <= 1
 
 
+def test_run_pipeline_sets_current_step_to_none_on_completion():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Step test", word_count=1500, language="en"), path)
+    outline_json = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+    article_json = '{"sections":[{"level":1,"heading":"Step test","content":"Content."}]}'
+    metadata_json = (
+        '{"title_tag":"Step","meta_description":"Step guide.",'
+        '"primary_keyword":"Step test","secondary_keywords":[],'
+        '"internal_links":[{"anchor_text":"a","target_topic":"b"}],'
+        '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"c"}]}'
+    )
+    faq_json = '[{"question":"Q?","answer":"A."}]'
+    llm = _MultiResponseLLM([outline_json, article_json, metadata_json, faq_json])
+    job = run_pipeline(job_id, path, MockSERPClient(), llm)
+    assert job is not None
+    assert job.status == JobStatus.completed
+    assert job.current_step is None
+
+
+def test_run_pipeline_sets_current_step_to_none_on_failure():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    init_db(path)
+    job_id = create_job_step(CreateJobInput(topic="Fail step", word_count=1000, language="en"), path)
+    run_serp_step(job_id, path, MockSERPClient())
+    llm = _MultiResponseLLM(["not valid json"])
+    job = run_pipeline(job_id, path, MockSERPClient(), llm)
+    assert job is not None
+    assert job.status == JobStatus.failed
+    assert job.current_step is None
+
+
 def test_run_pipeline_triggers_revision_when_below_threshold():
     import os
 

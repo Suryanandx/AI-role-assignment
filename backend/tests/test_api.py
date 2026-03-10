@@ -284,3 +284,141 @@ def test_graphql_job_article_with_faq_returns_sections_and_faq():
         assert awf["faq"][0]["question"] == "What is it?"
     finally:
         os.environ.pop("DB_PATH", None)
+
+
+def test_graphql_jobs_filter_by_status():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    os.environ["DB_PATH"] = path
+    try:
+        init_db(path)
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=MockLLMClient()),
+        ):
+            client = TestClient(app)
+            # Create two jobs (both pending)
+            for topic in ["Pending A", "Pending B"]:
+                client.post(
+                    "/graphql",
+                    json={
+                        "query": "mutation($input: CreateJobInput!) { createJob(input: $input) }",
+                        "variables": {"input": {"topic": topic}},
+                    },
+                )
+            # Query for pending jobs
+            resp = client.post(
+                "/graphql",
+                json={
+                    "query": "query { jobs(status: pending) { id status topic } }",
+                },
+            )
+        assert resp.status_code == 200
+        data = resp.json()["data"]["jobs"]
+        assert len(data) == 2
+        assert all(j["status"] == "pending" for j in data)
+
+        # Query for completed jobs (should be empty)
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=MockLLMClient()),
+        ):
+            resp2 = TestClient(app).post(
+                "/graphql",
+                json={
+                    "query": "query { jobs(status: completed) { id status } }",
+                },
+            )
+        assert resp2.status_code == 200
+        assert len(resp2.json()["data"]["jobs"]) == 0
+    finally:
+        os.environ.pop("DB_PATH", None)
+
+
+def test_graphql_retry_job_resumes_failed_job():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    os.environ["DB_PATH"] = path
+    try:
+        init_db(path)
+        # First run: LLM returns bad JSON to fail the outline step
+        bad_llm = _MultiResponseLLM(["not valid json"])
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=bad_llm),
+        ):
+            client = TestClient(app)
+            create_resp = client.post(
+                "/graphql",
+                json={
+                    "query": "mutation($input: CreateJobInput!) { createJob(input: $input) }",
+                    "variables": {"input": {"topic": "Retry test"}},
+                },
+            )
+            job_id = create_resp.json()["data"]["createJob"]
+            # Run pipeline - should fail at outline step
+            run_resp = client.post(
+                "/graphql",
+                json={
+                    "query": "mutation($jobId: ID!) { runPipeline(jobId: $jobId) { id status error } }",
+                    "variables": {"jobId": job_id},
+                },
+            )
+        run_data = run_resp.json()["data"]["runPipeline"]
+        assert run_data["status"] == "failed"
+        assert run_data["error"] is not None
+
+        # Second run: retry with good LLM responses
+        outline = '{"sections":[{"heading_level":1,"title":"Intro","bullet_points":[]}]}'
+        article = '{"sections":[{"level":1,"heading":"Retry test","content":"Content."}]}'
+        metadata = (
+            '{"title_tag":"T","meta_description":"D.",'
+            '"primary_keyword":"Retry test","secondary_keywords":[],'
+            '"internal_links":[{"anchor_text":"a","target_topic":"b"}],'
+            '"external_refs":[{"url":"https://x.com","title":"X","placement_context":"c"}]}'
+        )
+        faq = '[{"question":"Q?","answer":"A."}]'
+        good_llm = _MultiResponseLLM([outline, article, metadata, faq])
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=good_llm),
+        ):
+            retry_resp = TestClient(app).post(
+                "/graphql",
+                json={
+                    "query": "mutation($jobId: ID!) { retryJob(jobId: $jobId) { id status error article { sections { heading } } } }",
+                    "variables": {"jobId": job_id},
+                },
+            )
+        retry_data = retry_resp.json()["data"]["retryJob"]
+        assert retry_data is not None
+        assert retry_data["id"] == job_id
+        assert retry_data["status"] == "completed"
+        assert retry_data["error"] is None
+        assert retry_data["article"] is not None
+    finally:
+        os.environ.pop("DB_PATH", None)
+
+
+def test_graphql_retry_job_nonexistent_returns_null():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = f.name
+    os.environ["DB_PATH"] = path
+    try:
+        init_db(path)
+        with (
+            patch("app.api.context.get_serp_client", return_value=MockSERPClient()),
+            patch("app.api.context.get_llm_client", return_value=MockLLMClient()),
+        ):
+            client = TestClient(app)
+            resp = client.post(
+                "/graphql",
+                json={
+                    "query": "mutation($jobId: ID!) { retryJob(jobId: $jobId) { id } }",
+                    "variables": {"jobId": str(uuid.uuid4())},
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["retryJob"] is None
+    finally:
+        os.environ.pop("DB_PATH", None)

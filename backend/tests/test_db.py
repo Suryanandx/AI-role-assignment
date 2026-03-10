@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 
-from app.db import create_job, get_job, init_db, update_job
+from app.db import create_job, get_job, init_db, list_jobs, update_job
 from app.models import CreateJobInput, JobStatus
 
 
@@ -103,3 +103,41 @@ def test_update_job_full_roundtrip(db_path):
 def test_update_job_unknown_id_returns_none(db_path):
     init_db(db_path)
     assert update_job(db_path, uuid.uuid4(), {"status": "running"}) is None
+
+
+def test_list_jobs_filter_by_status(db_path):
+    init_db(db_path)
+    j1 = create_job(db_path, CreateJobInput(topic="pending1", word_count=500, language="en"))
+    j2 = create_job(db_path, CreateJobInput(topic="pending2", word_count=500, language="en"))
+    update_job(db_path, j2.id, {"status": "running"})
+
+    pending_jobs = list_jobs(db_path, status="pending")
+    assert len(pending_jobs) == 1
+    assert pending_jobs[0].topic == "pending1"
+
+    running_jobs = list_jobs(db_path, status="running")
+    assert len(running_jobs) == 1
+    assert running_jobs[0].topic == "pending2"
+
+    all_jobs = list_jobs(db_path)
+    assert len(all_jobs) == 2
+
+    completed_jobs = list_jobs(db_path, status="completed")
+    assert len(completed_jobs) == 0
+
+
+def test_update_job_current_step(db_path):
+    init_db(db_path)
+    job = create_job(db_path, CreateJobInput(topic="step", word_count=1000, language="en"))
+    assert job.current_step is None
+
+    updated = update_job(db_path, job.id, {"current_step": "serp_analysis"})
+    assert updated is not None
+    assert updated.current_step == "serp_analysis"
+
+    fetched = get_job(db_path, job.id)
+    assert fetched.current_step == "serp_analysis"
+
+    cleared = update_job(db_path, job.id, {"current_step": None})
+    assert cleared is not None
+    assert cleared.current_step is None
