@@ -30,6 +30,7 @@ export type JobFull = {
   topic: string;
   word_count: number;
   language: string;
+  current_step: string | null;
   quality_score: number | null;
   error: string | null;
   created_at: string;
@@ -63,6 +64,7 @@ const JobFullQuery = gql`
       topic
       wordCount
       language
+      currentStep
       qualityScore
       error
       createdAt
@@ -114,6 +116,60 @@ const CreateJobMutation = gql`
   }
 `;
 
+const RetryJobMutation = gql`
+  mutation RetryJob($jobId: ID!) {
+    retryJob(jobId: $jobId) {
+      id
+      status
+      topic
+      wordCount
+      language
+      currentStep
+      qualityScore
+      error
+      createdAt
+      updatedAt
+      article {
+        sections {
+          level
+          heading
+          content
+        }
+      }
+      metadata {
+        titleTag
+        metaDescription
+        primaryKeyword
+        secondaryKeywords
+      }
+      internalLinks {
+        anchorText
+        targetTopic
+      }
+      externalRefs {
+        url
+        title
+        placementContext
+      }
+      faq {
+        question
+        answer
+      }
+      articleWithFaq {
+        sections {
+          level
+          heading
+          content
+        }
+        faq {
+          question
+          answer
+        }
+      }
+    }
+  }
+`;
+
 const RunPipelineMutation = gql`
   mutation RunPipeline($jobId: ID!) {
     runPipeline(jobId: $jobId) {
@@ -122,6 +178,7 @@ const RunPipelineMutation = gql`
       topic
       wordCount
       language
+      currentStep
       qualityScore
       error
       createdAt
@@ -173,6 +230,7 @@ type JobFullRaw = {
   topic: string;
   wordCount: number;
   language: string;
+  currentStep: string | null;
   qualityScore: number | null;
   error: string | null;
   createdAt: string;
@@ -200,6 +258,7 @@ function mapJobFull(raw: JobFullRaw): JobFull {
     topic: raw.topic,
     word_count: raw.wordCount,
     language: raw.language,
+    current_step: raw.currentStep,
     quality_score: raw.qualityScore,
     error: raw.error,
     created_at: raw.createdAt,
@@ -270,6 +329,15 @@ export async function runPipeline(jobId: string): Promise<JobFull> {
     runPipeline: JobFullRaw | null;
   }>(graphqlUrl, RunPipelineMutation, { jobId });
   const job = data.runPipeline;
+  if (!job) return null;
+  return mapJobFull(job);
+}
+
+export async function retryJob(jobId: string): Promise<JobFull> {
+  const data = await request<{
+    retryJob: JobFullRaw | null;
+  }>(graphqlUrl, RetryJobMutation, { jobId });
+  const job = data.retryJob;
   if (!job) return null;
   return mapJobFull(job);
 }

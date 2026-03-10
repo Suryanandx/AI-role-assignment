@@ -17,6 +17,7 @@ def init_db(db_path: str) -> None:
             topic TEXT NOT NULL,
             word_count INTEGER NOT NULL,
             language TEXT NOT NULL,
+            current_step TEXT,
             serp_raw TEXT,
             serp_analysis TEXT,
             outline TEXT,
@@ -32,6 +33,12 @@ def init_db(db_path: str) -> None:
         )
         """
     )
+    # Migrate existing tables: add current_step column if missing
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN current_step TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -44,6 +51,7 @@ def _job_to_row(job: Job) -> dict:
         "topic": d["topic"],
         "word_count": d["word_count"],
         "language": d["language"],
+        "current_step": d.get("current_step"),
         "serp_raw": json.dumps(d["serp_raw"]) if d["serp_raw"] is not None else None,
         "serp_analysis": json.dumps(d["serp_analysis"]) if d["serp_analysis"] is not None else None,
         "outline": json.dumps(d["outline"]) if d["outline"] is not None else None,
@@ -67,6 +75,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         "topic": row["topic"],
         "word_count": row["word_count"],
         "language": row["language"],
+        "current_step": row["current_step"] if "current_step" in row.keys() else None,
         "serp_raw": json.loads(row["serp_raw"]) if row["serp_raw"] else None,
         "serp_analysis": json.loads(row["serp_analysis"]) if row["serp_analysis"] else None,
         "outline": json.loads(row["outline"]) if row["outline"] else None,
@@ -97,12 +106,12 @@ def create_job(db_path: str, input: CreateJobInput) -> Job:
     conn.execute(
         """
         INSERT INTO jobs (
-            id, status, topic, word_count, language,
+            id, status, topic, word_count, language, current_step,
             serp_raw, serp_analysis, outline, article, metadata,
             internal_links, external_refs, quality_score, faq, error,
             created_at, updated_at
         ) VALUES (
-            :id, :status, :topic, :word_count, :language,
+            :id, :status, :topic, :word_count, :language, :current_step,
             :serp_raw, :serp_analysis, :outline, :article, :metadata,
             :internal_links, :external_refs, :quality_score, :faq, :error,
             :created_at, :updated_at
@@ -130,23 +139,34 @@ def get_job(db_path: str, job_id: uuid.UUID | str) -> Job | None:
 LIST_JOBS_MAX_LIMIT = 100
 
 
-def list_jobs(db_path: str, limit: int = 20, offset: int = 0) -> list[Job]:
+def list_jobs(
+    db_path: str,
+    limit: int = 20,
+    offset: int = 0,
+    status: str | None = None,
+) -> list[Job]:
     init_db(db_path)
     limit = min(max(1, limit), LIST_JOBS_MAX_LIMIT)
     offset = max(0, offset)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    cur = conn.execute(
-        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    )
+    if status:
+        cur = conn.execute(
+            "SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (status, limit, offset),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
     rows = cur.fetchall()
     conn.close()
     return [_row_to_job(row) for row in rows]
 
 
 _UPDATABLE = {
-    "status", "serp_raw", "serp_analysis", "outline", "article", "metadata",
+    "status", "current_step", "serp_raw", "serp_analysis", "outline", "article", "metadata",
     "internal_links", "external_refs", "quality_score", "faq", "error", "updated_at",
 }
 _JSON_COLUMNS = {

@@ -31,6 +31,7 @@ class Job(BaseModel):
     topic: str
     word_count: int
     language: str
+    current_step: str | None = None
     serp_raw: list[SERPResult] | None = None
     serp_analysis: SERPAnalysis | None = None
     outline: Outline | None = None

@@ -534,6 +534,11 @@ def run_faq_step(
     return get_job(db_path, job_id)
 
 
+def _fail(db_path: str, job_id: uuid.UUID) -> Job | None:
+    update_job(db_path, job_id, {"status": JobStatus.failed, "current_step": None})
+    return get_job(db_path, job_id)
+
+
 def run_pipeline(
     job_id: uuid.UUID,
     db_path: str,
@@ -543,86 +548,62 @@ def run_pipeline(
     job = get_job(db_path, job_id)
     if job is None:
         return None
-    update_job(db_path, job_id, {"status": JobStatus.running})
+    update_job(db_path, job_id, {"status": JobStatus.running, "error": None})
 
     if job.serp_analysis is None:
+        update_job(db_path, job_id, {"current_step": "serp_analysis"})
         result = run_serp_step(job_id, db_path, serp_client)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
 
     if job.outline is None:
+        update_job(db_path, job_id, {"current_step": "outline"})
         result = run_outline_step(job_id, db_path, llm_client)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
 
     if job.article is None:
+        update_job(db_path, job_id, {"current_step": "article"})
         result = run_article_step(job_id, db_path, llm_client)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
 
     if job.metadata is None:
+        update_job(db_path, job_id, {"current_step": "metadata"})
         result = run_metadata_step(job_id, db_path, llm_client)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
 
     if job.faq is None:
+        update_job(db_path, job_id, {"current_step": "faq"})
         result = run_faq_step(job_id, db_path, llm_client)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
 
+    update_job(db_path, job_id, {"current_step": "validation"})
     result = run_validation_step(job_id, db_path)
-    if result is None:
-        update_job(db_path, job_id, {"status": JobStatus.failed})
-        return get_job(db_path, job_id)
+    if result is None or result.error is not None:
+        return _fail(db_path, job_id)
     job = result
-    if job.error is not None:
-        update_job(db_path, job_id, {"status": JobStatus.failed})
-        return get_job(db_path, job_id)
 
     settings = Settings()
     if job.quality_score is not None and job.quality_score < settings.quality_score_threshold:
+        update_job(db_path, job_id, {"current_step": "revision"})
         reason = _revision_reason(job, job.quality_score)
         result = run_revision_step(job_id, db_path, llm_client, reason)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        update_job(db_path, job_id, {"current_step": "validation"})
         result = run_validation_step(job_id, db_path)
-        if result is None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
+        if result is None or result.error is not None:
+            return _fail(db_path, job_id)
         job = result
-        if job.error is not None:
-            update_job(db_path, job_id, {"status": JobStatus.failed})
-            return get_job(db_path, job_id)
 
-    update_job(db_path, job_id, {"status": JobStatus.completed})
+    update_job(db_path, job_id, {"status": JobStatus.completed, "current_step": None})
     return get_job(db_path, job_id)
